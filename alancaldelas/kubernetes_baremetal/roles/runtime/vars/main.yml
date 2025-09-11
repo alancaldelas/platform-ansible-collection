@@ -1,3 +1,12 @@
 #SPDX-License-Identifier: MIT-0
 ---
 # vars file for runtime
+
+# Service name mappings for different container runtimes
+container_runtime_service_name: "{{ container_runtime_services[container_runtime] | default(container_runtime) }}"
+
+container_runtime_services:
+  containerd: containerd
+  crio: crio
+  docker: docker
+  podman: podman

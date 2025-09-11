@@ -1,0 +1,152 @@
+---
+- name: Install CRI-O build dependencies (Debian/Ubuntu)
+  package:
+    name: "{{ containerd_build_packages }}"
+    state: present
+  when: 
+    - crio_build_method == "source"
+    - ansible_os_family == "Debian"
+
+- name: Install CRI-O build dependencies (RHEL/CentOS)
+  package:
+    name: "{{ containerd_build_packages_rhel }}"
+    state: present
+  when: 
+    - crio_build_method == "source"
+    - ansible_os_family == "RedHat"
+
+- name: Create CRI-O build directory
+  file:
+    path: "{{ crio_build_dir }}"
+    state: directory
+    mode: '0755'
+  when: crio_build_method == "source"
+
+- name: Clone CRI-O repository
+  git:
+    repo: https://github.com/cri-o/cri-o.git
+    dest: "{{ crio_build_dir }}/cri-o"
+    version: "v{{ crio_version }}"
+    force: yes
+  when: crio_build_method == "source"
+
+- name: Build CRI-O from source
+  shell: |
+    export PATH=/usr/local/go/bin:$PATH
+    export GOPATH={{ crio_build_dir }}/go
+    make all
+    make install
+  args:
+    chdir: "{{ crio_build_dir }}/cri-o"
+    creates: /usr/local/bin/crio
+  when: crio_build_method == "source"
+
+- name: Create CRI-O configuration directories (source build)
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  loop:
+    - /etc/crio
+    - /etc/crio/crio.conf.d
+    - /usr/share/containers/oci/hooks.d
+  when: crio_build_method == "source"
+
+- name: Add CRI-O repository GPG key (Debian/Ubuntu)
+  apt_key:
+    url: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/x{{ ansible_distribution }}_{{ ansible_distribution_version }}/Release.key"
+    state: present
+  when: 
+    - crio_build_method == "binary"
+    - ansible_os_family == "Debian"
+
+- name: Add CRI-O stable repository (Debian/Ubuntu)
+  apt_repository:
+    repo: "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/x{{ ansible_distribution }}_{{ ansible_distribution_version }}/ /"
+    state: present
+    update_cache: yes
+  when: 
+    - crio_build_method == "binary"
+    - ansible_os_family == "Debian"
+
+- name: Add CRI-O kubernetes repository (Debian/Ubuntu)
+  apt_repository:
+    repo: "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ kubernetes_version | regex_replace('\\.', ':') }}/x{{ ansible_distribution }}_{{ ansible_distribution_version }}/ /"
+    state: present
+    update_cache: yes
+  when: 
+    - crio_build_method == "binary"
+    - ansible_os_family == "Debian"
+
+- name: Add CRI-O repository (RHEL/CentOS)
+  yum_repository:
+    name: "{{ item.name }}"
+    description: "{{ item.description }}"
+    baseurl: "{{ item.baseurl }}"
+    gpgkey: "{{ item.gpgkey }}"
+    gpgcheck: yes
+    enabled: yes
+  loop:
+    - name: devel_kubic_libcontainers_stable
+      description: "Stable Releases of Libcontainers Packages (CentOS_{{ ansible_distribution_major_version }})"
+      baseurl: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/CentOS_{{ ansible_distribution_major_version }}/"
+      gpgkey: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/CentOS_{{ ansible_distribution_major_version }}/repodata/repomd.xml.key"
+    - name: "devel_kubic_libcontainers_stable_cri-o_{{ kubernetes_version | regex_replace('\\.', '_') }}"
+      description: "CRI-O {{ kubernetes_version }} (CentOS_{{ ansible_distribution_major_version }})"
+      baseurl: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ kubernetes_version | regex_replace('\\.', ':') }}/CentOS_{{ ansible_distribution_major_version }}/"
+      gpgkey: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ kubernetes_version | regex_replace('\\.', ':') }}/CentOS_{{ ansible_distribution_major_version }}/repodata/repomd.xml.key"
+  when: 
+    - crio_build_method == "binary"
+    - ansible_os_family == "RedHat"
+
+- name: Install CRI-O packages from repository
+  package:
+    name:
+      - cri-o
+      - cri-o-runc
+    state: present
+  when: crio_build_method == "binary"
+
+- name: Create CRI-O systemd service file (source build)
+  copy:
+    src: crio.service
+    dest: /etc/systemd/system/crio.service
+    mode: '0644'
+    owner: root
+    group: root
+  notify: restart crio
+  when: crio_build_method == "source"
+
+- name: Configure CRI-O
+  template:
+    src: crio.conf.j2
+    dest: /etc/crio/crio.conf
+    mode: '0644'
+    owner: root
+    group: root
+    backup: yes
+  notify: restart crio
+
+- name: Start and enable CRI-O service
+  systemd:
+    name: crio
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+- name: Clean up downloaded files (binary installation)
+  file:
+    path: /tmp/go{{ go_version }}.tar.gz
+    state: absent
+  when: crio_build_method == "binary"
+
+- name: Clean up build artifacts (source installation)
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ crio_build_dir }}"
+    - /tmp/go{{ go_version }}.tar.gz
+  when: crio_build_method == "source"

@@ -1,0 +1,187 @@
+---
+- name: Create containerd user
+  user:
+    name: containerd
+    system: yes
+    home: /var/lib/containerd
+    shell: /bin/false
+    create_home: no
+
+- name: Create containerd directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  loop:
+    - /opt/containerd
+    - /var/lib/containerd
+    - /var/run/containerd
+    - /etc/containerd
+
+- name: Install build dependencies for source compilation
+  package:
+    name: "{{ containerd_build_packages }}"
+    state: present
+  when: 
+    - containerd_build_method == "source"
+    - ansible_os_family == "Debian"
+
+- name: Install build dependencies for source compilation (RHEL)
+  package:
+    name: "{{ containerd_build_packages_rhel }}"
+    state: present
+  when: 
+    - containerd_build_method == "source"
+    - ansible_os_family == "RedHat"
+
+- name: Create build directory
+  file:
+    path: "{{ containerd_build_dir }}"
+    state: directory
+    mode: '0755'
+  when: containerd_build_method == "source"
+
+- name: Clone containerd repository
+  git:
+    repo: https://github.com/containerd/containerd.git
+    dest: "{{ containerd_build_dir }}/containerd"
+    version: "v{{ container_runtime_version }}"
+    force: yes
+  when: containerd_build_method == "source"
+
+- name: Build containerd from source
+  shell: |
+    export PATH=/usr/local/go/bin:$PATH
+    export GOPATH={{ containerd_build_dir }}/go
+    make all
+    make install
+  args:
+    chdir: "{{ containerd_build_dir }}/containerd"
+    creates: /usr/local/bin/containerd
+  when: containerd_build_method == "source"
+
+- name: Download containerd binary (pre-built)
+  get_url:
+    url: "https://github.com/containerd/containerd/releases/download/v{{ container_runtime_version }}/containerd-{{ container_runtime_version }}-linux-amd64.tar.gz"
+    dest: /tmp/containerd-{{ container_runtime_version }}.tar.gz
+    mode: '0644'
+  register: containerd_download
+  when: containerd_build_method == "binary"
+
+- name: Extract containerd binary (pre-built)
+  unarchive:
+    src: /tmp/containerd-{{ container_runtime_version }}.tar.gz
+    dest: /usr/local
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0755'
+  when: 
+    - containerd_build_method == "binary"
+    - containerd_download.changed
+
+- name: Clone runc repository for source build
+  git:
+    repo: https://github.com/opencontainers/runc.git
+    dest: "{{ containerd_build_dir }}/runc"
+    version: "v{{ runc_version }}"
+    force: yes
+  when: containerd_build_method == "source"
+
+- name: Build runc from source
+  shell: |
+    export PATH=/usr/local/go/bin:$PATH
+    export GOPATH={{ containerd_build_dir }}/go
+    make all
+    make install
+  args:
+    chdir: "{{ containerd_build_dir }}/runc"
+    creates: /usr/local/sbin/runc
+  when: containerd_build_method == "source"
+
+- name: Download runc binary (pre-built)
+  get_url:
+    url: "https://github.com/opencontainers/runc/releases/download/v{{ runc_version }}/runc.amd64"
+    dest: /usr/local/sbin/runc
+    mode: '0755'
+    owner: root
+    group: root
+  when: containerd_build_method == "binary"
+
+- name: Download CNI plugins
+  get_url:
+    url: "https://github.com/containernetworking/plugins/releases/download/v{{ cni_version }}/cni-plugins-linux-amd64-v{{ cni_version }}.tgz"
+    dest: /tmp/cni-plugins-v{{ cni_version }}.tgz
+    mode: '0644'
+  register: cni_download
+
+- name: Create CNI directory
+  file:
+    path: /opt/cni/bin
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Extract CNI plugins
+  unarchive:
+    src: /tmp/cni-plugins-v{{ cni_version }}.tgz
+    dest: /opt/cni/bin
+    remote_src: yes
+    owner: root
+    group: root
+    mode: '0755'
+  when: cni_download.changed
+
+- name: Create containerd configuration directory
+  file:
+    path: /etc/containerd
+    state: directory
+    mode: '0755'
+
+- name: Create containerd systemd service file
+  copy:
+    src: containerd.service
+    dest: /etc/systemd/system/containerd.service
+    mode: '0644'
+    owner: root
+    group: root
+  notify: restart containerd
+
+- name: Configure containerd with custom settings
+  template:
+    src: containerd-config.toml.j2
+    dest: /etc/containerd/config.toml
+    mode: '0644'
+    owner: root
+    group: root
+    backup: yes
+  notify: restart containerd
+
+- name: Reload systemd and start containerd service
+  systemd:
+    name: containerd
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+- name: Clean up downloaded files (binary installation)
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/containerd-{{ container_runtime_version }}.tar.gz
+    - /tmp/cni-plugins-v{{ cni_version }}.tgz
+  when: containerd_build_method == "binary"
+
+- name: Clean up build artifacts (source installation)
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ containerd_build_dir }}"
+    - /tmp/go{{ go_version }}.tar.gz
+    - /tmp/cni-plugins-v{{ cni_version }}.tgz
+  when: containerd_build_method == "source"

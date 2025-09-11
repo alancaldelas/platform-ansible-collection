@@ -1,0 +1,277 @@
+# The crio table contains settings for the crio daemon
+[crio]
+
+# root is a path to the "root directory" where all information not
+# explicitly handled by the container's storage driver will be stored.
+root = "{{ container_storage_path }}"
+
+# run is a path to the "run directory" where state information not
+# explicitly handled by the container's storage driver will be stored.
+runroot = "/var/run/containers/storage"
+
+# storage_driver select which storage driver is used to manage storage
+# of images and containers.
+storage_driver = "{{ container_storage_driver }}"
+
+# storage_option is used to pass an option to the storage driver.
+storage_option = [
+]
+
+# The crio.api table contains settings for the kubelet/gRPC interface.
+[crio.api]
+
+# listen is the path to the AF_LOCAL socket on which crio will listen.
+listen = "/var/run/crio/crio.sock"
+
+# stream_address is the IP address on which the stream server will listen.
+stream_address = "127.0.0.1"
+
+# stream_port is the port on which the stream server will listen.
+stream_port = "0"
+
+# stream_enable_tls enables encrypted TLS transport of the stream server.
+stream_enable_tls = false
+
+# stream_tls_cert is the x509 certificate file path used to serve the encrypted stream.
+stream_tls_cert = ""
+
+# stream_tls_key is the key file path used to serve the encrypted stream.
+stream_tls_key = ""
+
+# stream_tls_ca is the x509 CA(s) file used to verify and authenticate client
+# communication with the encrypted stream.
+stream_tls_ca = ""
+
+# grpc_max_send_msg_size maximum grpc send message size in bytes.
+grpc_max_send_msg_size = 16777216
+
+# grpc_max_recv_msg_size maximum grpc receive message size in bytes.
+grpc_max_recv_msg_size = 16777216
+
+# The crio.runtime table contains settings pertaining to the OCI runtime used
+# and options for how to set up and manage the OCI runtime.
+[crio.runtime]
+
+# default_runtime is the _name_ of the OCI runtime to be used as the default.
+default_runtime = "runc"
+
+# no_pivot instructs the runtime to not use pivot_root, but instead use MS_MOVE.
+no_pivot = false
+
+# decryption_keys_path is the path where keys required for
+# image decryption are stored.
+decryption_keys_path = "/etc/crio/keys/"
+
+# conmon is the path to the conmon binary, used for monitoring the OCI runtime.
+conmon = "/usr/libexec/crio/conmon"
+
+# conmon_cgroup is the cgroup setting used for conmon.
+conmon_cgroup = "system.slice"
+
+# conmon_env is the environment variable list for the conmon process,
+# used for passing necessary environment variables to conmon or the runtime.
+conmon_env = [
+	"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+]
+
+# seccomp_profile is the seccomp json profile path which is used as the
+# default seccomp profile for the runtime.
+seccomp_profile = ""
+
+# apparmor_profile is the apparmor profile name which is used as the
+# default apparmor profile for the runtime.
+apparmor_profile = ""
+
+# blockio_config_file is the path to the blockio class configuration file
+# for configuring the cgroup blockio controller.
+blockio_config_file = ""
+
+# irqbalance_config_file is the path to the irqbalance configuration file
+# for configuring irqbalance daemon.
+irqbalance_config_file = ""
+
+# rdt_config_file is the path to the RDT configuration file
+# for configuring the resctrl pseudo-filesystem.
+rdt_config_file = ""
+
+# cgroup_manager is the cgroup management implementation used for the runtime.
+cgroup_manager = "systemd"
+
+# separate_pull_cgroup is the path to the cgroup that will be used for
+# pulling images that are not present on the host.
+separate_pull_cgroup = ""
+
+# default_capabilities is the default set of capabilities a container process
+# should have.  Capabilities are specified as strings, such as:
+#   default_capabilities = [
+# 	    "CHOWN",
+# 	    "DAC_OVERRIDE",
+# 	    "FSETID"
+#   ]
+default_capabilities = [
+	"CHOWN",
+	"DAC_OVERRIDE",
+	"FSETID",
+	"FOWNER",
+	"SETGID",
+	"SETUID",
+	"SETPCAP",
+	"NET_BIND_SERVICE",
+	"KILL",
+]
+
+# default_sysctls is the default set of sysctls a container process should have.
+# Sysctls are specified as "name=value" strings.
+default_sysctls = [
+]
+
+# additional_devices is devices that will be added to each container.
+additional_devices = [
+]
+
+# hooks_dir is the list of directories where OCI hooks are stored.
+hooks_dir = [
+	"/usr/share/containers/oci/hooks.d",
+]
+
+# default_mounts is the list of mounts to be mounted for each container
+# The format of default_mounts is ["/host/path:/container/path:options"].
+default_mounts = [
+]
+
+# pids_limit is the number of processes allowed in a container.
+pids_limit = 1024
+
+# log_size_max is the maximum number of bytes after which the log file
+# will be truncated. It can be expressed as a human-friendly string
+# that is parsed to bytes.
+# Negative values indicate that the log file won't be truncated.
+log_size_max = {{ container_log_max_size }}
+
+# log_to_journald is whether to log to the systemd journal in addition
+# to the kubernetes log file
+log_to_journald = false
+
+# container_exits_dir is the directory in which container exit files are
+# written to by conmon.
+container_exits_dir = "/var/run/crio/exits"
+
+# container_attach_socket_dir is the directory for container attach sockets.
+container_attach_socket_dir = "/var/run/crio"
+
+# bind_mount_prefix is the prefix to use for the source of the bind mounts.
+bind_mount_prefix = ""
+
+# read_only is whether the container will be initially created as read only.
+read_only = false
+
+# log_level is the level of the log messages.
+log_level = "info"
+
+# log_filter is a regular expression to filter the log messages.
+log_filter = ""
+
+# uid_mappings specifies the UID mappings for the user namespace of each container.
+# A range is specified in the form containerUID:HostUID:Size.
+# Multiple ranges must be separated by comma.
+uid_mappings = ""
+
+# gid_mappings specifies the GID mappings for the user namespace of each container.
+# A range is specified in the form containerGID:HostGID:Size.
+# Multiple ranges must be separated by comma.
+gid_mappings = ""
+
+# ctr_stop_timeout is the amount of time we wait before issuing a timeout
+# warning and subsequent SIGKILL after attempting to stop a container.
+ctr_stop_timeout = 30
+
+# manage_ns_lifecycle determines whether we pin and remove network namespaces
+# and manage their lifecycle.
+manage_ns_lifecycle = false
+
+# pinns_path is the path to find the pinns binary, which is needed to manage namespace lifecycle
+pinns_path = ""
+
+# default_runtime is the _path_ to the OCI runtime binary called by crio.
+# Multiple runtime entries can be created (up to 5 entries).
+# The name of the runtime can be arbitrary but it should be unique.
+
+# runtime_path is the path to the OCI runtime binary for a given runtime name.
+# runtime_type is the type of OCI runtime for a given runtime name.
+# runtime_root is the path to the root of the runtime state for a given runtime name.
+
+[crio.runtime.runtimes.runc]
+runtime_path = "/usr/local/sbin/runc"
+runtime_type = "oci"
+runtime_root = "/run/runc"
+
+# The crio.image table contains settings pertaining to the management of OCI images.
+#
+# crio.image.default_transport sets the default transport for pulling images from a remote
+# container storage.
+[crio.image]
+default_transport = "docker://"
+
+# global_auth_file is a path to a file like /var/lib/kubelet/config.json
+# holding credentials necessary for pulling images from secure registries.
+global_auth_file = ""
+
+# pause_image is the image which we use to instantiate infra containers.
+pause_image = "registry.k8s.io/pause:3.9"
+
+# pause_image_auth_file is a path to a file like /var/lib/kubelet/config.json
+# holding credentials specific to pulling the pause_image from above.
+pause_image_auth_file = ""
+
+# pause_command is the command to run to have a container stay in the paused state.
+pause_command = "/pause"
+
+# signature_policy is the name of the file which decides what sort of policy we
+# use when deciding whether or not to trust an image that we've pulled.
+signature_policy = ""
+
+# image_volumes determines how to handle the ImageVolumes type of built-in data.
+image_volumes = "mkdir"
+
+# insecure_registries is used to skip TLS verification when pulling images.
+insecure_registries = {{ container_insecure_registries | to_json }}
+
+# registries is used to specify a comma separated list of registries to be used
+# when pulling an unqualified image (e.g., fedora:rawhide).
+registries = {{ container_registries | to_json }}
+
+# The crio.network table containers settings pertaining to the management of
+# CNI plugins.
+[crio.network]
+
+# network_dir is where CNI network configuration files are stored.
+network_dir = "/etc/cni/net.d/"
+
+# plugin_dirs is where CNI plugin binaries are stored.
+plugin_dirs = [
+	"/opt/cni/bin/",
+]
+
+# The crio.metrics table containers settings pertaining to the prometheus based metrics collection
+[crio.metrics]
+
+# enable_metrics enables or disables the metrics collection
+enable_metrics = false
+
+# metrics_port is the port on which the metrics server will listen.
+metrics_port = 9090
+
+# metrics_socket is the socket on which the metrics server will listen.
+metrics_socket = ""
+
+# The crio.tracing table containers settings pertaining to the jaeger based tracing collection
+[crio.tracing]
+
+# enable_tracing enables or disables the tracing collection
+enable_tracing = false
+
+# tracing_endpoint is the endpoint to which the adapter will send trace information
+tracing_endpoint = ""
+
+# tracing_sampling_rate is the number of samples to collect per million spans observed
+tracing_sampling_rate = 1000000

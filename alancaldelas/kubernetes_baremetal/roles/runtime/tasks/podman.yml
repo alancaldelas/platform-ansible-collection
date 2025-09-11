@@ -1,0 +1,38 @@
+---
+- name: Install Podman (Debian/Ubuntu)
+  package:
+    name: podman
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Install Podman (RHEL/CentOS)
+  package:
+    name: podman
+    state: present
+  when: ansible_os_family == "RedHat"
+
+- name: Create Podman configuration directory
+  file:
+    path: /etc/containers
+    state: directory
+    mode: '0755'
+
+- name: Configure Podman registries
+  template:
+    src: registries.conf.j2
+    dest: /etc/containers/registries.conf
+    mode: '0644'
+  notify: restart podman
+
+- name: Configure Podman storage
+  template:
+    src: storage.conf.j2
+    dest: /etc/containers/storage.conf
+    mode: '0644'
+
+- name: Enable Podman socket service
+  systemd:
+    name: podman.socket
+    state: started
+    enabled: yes
+    daemon_reload: yes

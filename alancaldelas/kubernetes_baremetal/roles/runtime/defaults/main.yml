@@ -1,3 +1,84 @@
 #SPDX-License-Identifier: MIT-0
 ---
 # defaults file for runtime
+#
+
+# Container runtime to install
+container_runtime: containerd  # or 'crio', 'docker'
+container_runtime_version: "1.7.2"
+
+# Component versions for source installation
+runc_version: "1.1.9"
+cni_version: "1.3.0"
+
+# Build method: 'binary' (download pre-built) or 'source' (compile from source)
+containerd_build_method: binary
+
+# Build dependencies and configuration
+containerd_build_dir: /tmp/containerd-build
+go_version: "1.21.3"
+
+# Build dependencies for source compilation
+containerd_build_packages:
+  - git
+  - make
+  - gcc
+  - libc6-dev
+  - pkg-config
+  - libseccomp-dev
+  - libbtrfs-dev
+
+containerd_build_packages_rhel:
+  - git
+  - make
+  - gcc
+  - glibc-devel
+  - pkgconfig
+  - libseccomp-devel
+  - btrfs-progs-devel
+
+# Common settings
+container_log_max_size: "10Mi"
+container_log_max_files: 3
+
+# Registry settings
+container_registries:
+  - quay.io
+  - registry.k8s.io
+  - docker.io
+
+container_insecure_registries: []
+container_registry_mirrors: []
+
+# Storage
+container_storage_driver: overlay2
+container_storage_path: /var/lib/containers
+
+# Kubernetes version for CRI-O compatibility
+kubernetes_version: "1.28"
+
+# CRI-O build method: 'binary' (download from repo) or 'source' (compile from source)
+crio_build_method: binary
+
+# CRI-O build configuration
+crio_build_dir: /tmp/crio-build
+crio_version: "{{ kubernetes_version }}.0"
+
+# Common runtime packages for different OS families
+common_runtime_packages:
+  - curl
+  - wget
+  - gnupg
+  - lsb-release
+  - ca-certificates
+  - apt-transport-https
+  - software-properties-common
+
+common_runtime_packages_rhel:
+  - curl
+  - wget
+  - gnupg2
+  - yum-utils
+  - device-mapper-persistent-data
+  - lvm2
+  - ca-certificates

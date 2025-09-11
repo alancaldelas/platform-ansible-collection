@@ -1,3 +1,27 @@
 #SPDX-License-Identifier: MIT-0
 ---
-# tasks file for runtime
+- name: Include common pre-reqs
+  include_tasks: common.yml
+
+- name: Install and configure Containerd
+  include_tasks: containerd.yml
+  when: container_runtime == "containerd"
+
+- name: Install and configure CRI-O
+  include_tasks: crio.yml
+  when: container_runtime == "crio"
+
+- name: Install and configure Docker
+  include_tasks: docker.yml
+  when: container_runtime == "docker"
+
+- name: Install and configure Podman
+  include_tasks: podman.yml
+  when: container_runtime == "podman"
+
+- name: Ensure Container Runtime is running
+  systemd:
+    name: "{{ container_runtime_service_name }}"
+    state: started
+    enabled: yes
+    daemon_reload: yes
