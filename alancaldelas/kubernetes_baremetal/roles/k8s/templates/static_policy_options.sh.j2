@@ -1,0 +1,6 @@
+export FEATURE_GATES=CPUManagerPolicyOptions=true,CPUManagerPolicyAlphaOptions=true
+export CPUMANAGER_POLICY="static"
+export CPUMANGER_RECONCILE_PERIOD="5s"
+export KUBELET_FLAGS="--kube-reserved=cpu=1,memory=2Gi,ephemeral-storage=1Gi --system-reserved=cpu=1,memory=2Gi,ephemeral-storage=1Gi"
+export CPUMANAGER_POLICY_OPTIONS={% for flag in static_policy_flags -%}{{flag}}{% endfor -%}
+

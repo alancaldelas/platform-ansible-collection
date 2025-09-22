@@ -1,0 +1,6 @@
+export PATH=/home/{{user}}/k8s_repo/third_party/etcd:$PATH
+export PATH=$PATH:$GOPATH/bin
+export PATH=$PATH:/home/{{user}}/k8s_repo/_output/bin/
+export CGROUP_DRIVER=systemd
+export KUBECONFIG=/var/run/kubernetes/admin.kubeconfig
+export CONTAINER_RUNTIME_ENDPOINT="unix:///run/{{k8s_container_runtime}}/{{k8s_container_runtime}}.sock"

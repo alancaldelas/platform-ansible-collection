@@ -1,0 +1,167 @@
+---
+# Kubernetes source installation tasks
+# This file handles building Kubernetes from source
+
+- name: Install Go from source
+  block:
+    - name: Download Go TarBall
+      get_url: 
+        url: "{{ go_url }}/{{ go_tarball }}"
+        dest: "/tmp/{{ go_tarball }}"
+      become: true
+    
+    - name: Remove existing Go installation
+      file: 
+        path: /usr/local/go
+        state: absent 
+      become: true
+    
+    - name: Extract Go tarball
+      unarchive:
+        src: "/tmp/{{ go_tarball }}"
+        dest: /usr/local/
+        remote_src: yes
+        creates: /usr/local/go/bin/go
+      become: true
+
+    - name: Config ENVs for Go
+      ansible.builtin.template:
+        src: go.sh.j2
+        dest: /etc/profile.d/go.sh
+        owner: root
+        group: root
+        mode: '0644'
+      become: true
+    
+    - name: Make sure GOPATH exists
+      ansible.builtin.file: 
+        path: "{{ ansible_env.HOME }}/go"
+        state: directory
+        mode: '0755'
+    - name: Verify Go installation
+      shell: /usr/local/go/bin/go version
+      register: go_version_out
+      changed_when: false
+
+    - name: Display Version
+      debug:
+        var: go_version_out.stdout
+  when: k8s_install_from_source | bool
+  
+- name: Clean up Go tarball
+  ansible.builtin.file:
+    path: "/tmp/{{ go_tarball }}"
+    state: absent
+  become: true
+  when: k8s_install_from_source | bool
+
+- name: Create Kubernetes source directory
+  ansible.builtin.file:
+    path: "{{ k8s_dir }}"
+    state: directory
+    mode: '0755'
+    group: "{{ k8s_build_user }}"
+    owner: "{{ k8s_build_user }}"
+  become: true
+  when: k8s_install_from_source | bool
+
+- name: Clone Kubernetes git repository
+  ansible.builtin.git:
+    repo: "{{ k8s_repo }}"
+    dest: "{{ k8s_dir }}"
+    version: "{{ k8s_branch }}"
+    accept_hostkey: yes
+    force: yes
+  become_user: "{{ k8s_build_user }}"
+  become: true
+  when: k8s_install_from_source | bool
+
+- name: Set correct ownership for Kubernetes directory
+  ansible.builtin.file:
+    path: "{{ k8s_dir }}"
+    mode: '0755'
+    group: "{{ k8s_build_user }}"
+    owner: "{{ k8s_build_user }}"
+    recurse: yes
+  become: true
+  when: k8s_install_from_source | bool
+- name: Add Kubernetes environment to /etc/profile
+  ansible.builtin.template:
+    src: k8s.sh.j2
+    dest: /etc/profile.d/k8s.sh
+    mode: '0644'
+    owner: root
+    group: root
+  become: true
+  when: k8s_install_from_source | bool
+
+- name: Create optional profile config directory
+  ansible.builtin.file:
+    path: /etc/profile.d/optional
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  become: true
+  when: k8s_install_from_source | bool
+
+- name: Static Policy options file (needs to be sourced)
+  ansible.builtin.template:
+    src: static_policy_options.sh.j2
+    dest: /etc/profile.d/optional/static.sh
+    mode: '0644'
+    owner: root
+    group: root
+  become: true
+  when: k8s_install_from_source | bool
+- name: Install cfssl tools
+  ansible.builtin.shell:
+    cmd: |
+      export PATH=/usr/local/go/bin:$PATH
+      export GOPATH={{ ansible_env.HOME }}/go
+      /usr/local/go/bin/go install github.com/cloudflare/cfssl/cmd/...@latest
+  args:
+    executable: /bin/bash
+    creates: "{{ ansible_env.HOME }}/go/bin/cfssl"
+  become_user: "{{ k8s_build_user }}"
+  become: true
+  when: k8s_install_from_source | bool
+
+- name: Install delve debugger
+  ansible.builtin.shell:
+    cmd: |
+      export PATH=/usr/local/go/bin:$PATH
+      export GOPATH={{ ansible_env.HOME }}/go
+      /usr/local/go/bin/go install github.com/go-delve/delve/cmd/dlv@latest
+  args:
+    executable: /bin/bash
+    creates: "{{ ansible_env.HOME }}/go/bin/dlv"
+  become_user: "{{ k8s_build_user }}"
+  become: true
+  when: k8s_install_from_source | bool
+- name: Install etcd
+  ansible.builtin.shell: 
+    cmd: |
+      export PATH=/usr/local/go/bin:$PATH
+      export GOPATH={{ ansible_env.HOME }}/go
+      /usr/local/go/bin/go version
+      ./hack/install-etcd.sh
+    chdir: "{{ k8s_dir }}"
+  args:
+    executable: /bin/bash
+    creates: "{{ k8s_dir }}/third_party/etcd/etcd"
+  become: true
+  when: k8s_install_from_source | bool
+- name: Configure Kubelet resolv.conf for Ubuntu
+  ansible.builtin.copy:
+    dest: /etc/profile.d/k8s_ubuntu.sh
+    content: |
+      # Ubuntu-specific kubelet configuration
+      export KUBELET_RESOLV_CONF=/run/systemd/resolve/resolv.conf
+    mode: '0644'
+    owner: root
+    group: root
+  become: true
+  when: 
+    - k8s_install_from_source | bool
+    - ansible_distribution == "Ubuntu"

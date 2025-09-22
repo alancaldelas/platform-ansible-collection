@@ -9,7 +9,8 @@ Before=kubelet.service
 Type=notify
 EnvironmentFile=-/etc/sysconfig/crio
 Environment=GOTRACEBACK=crash
-ExecStart=/usr/local/bin/crio
+ExecStart=/usr/local/bin/crio \
+          --log-level=debug
 ExecReload=/bin/kill -s HUP $MAINPID
 TasksMax=infinity
 LimitNOFILE=1048576

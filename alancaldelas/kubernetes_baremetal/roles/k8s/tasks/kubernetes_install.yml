@@ -1,0 +1,132 @@
+---
+# Tasks for pre-reqs
+# Get OS info and update system
+- name: Get OS Info
+  debug:
+    msg: |
+      Operating System: {{ ansible_distribution }}
+      OS Family: {{ ansible_os_family }}
+      Kernel: {{ ansible_kernel }}
+- name: Perform tasks for Debian-based
+  block:
+    - name: Update
+      apt:
+        update_cache: yes
+      become: true
+    - name: Install Pre-reqs
+      apt:
+        name: "{{ k8s_required_packages + k8s_required_packages_debian }}"
+        state: present
+      become: true
+    - name: Install Kubernetes Public key
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version.split('.')[0] }}.{{ kubernetes_version.split('.')[1] }}/deb/Release.key |
+        gpg --batch --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      become: true
+    - name: Add Kubernetes Repository
+      apt_repository:
+        repo: deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version.split('.')[0] }}.{{ kubernetes_version.split('.')[1] }}/deb/ /
+        state: present
+        filename: kubernetes
+      become: true
+  when: ansible_distribution == "Ubuntu"
+
+- name: Perform tasks for RHEL-based
+  block:
+    - name: Update
+      yum:
+        update_cache: yes
+      become: true
+      when: ansible_pkg_mgr == 'yum'
+    
+    - name: Update (DNF)
+      dnf:
+        update_cache: yes
+      become: true
+      when: ansible_pkg_mgr == 'dnf'
+    
+    - name: Install Pre-reqs (YUM)
+      yum:
+        name: "{{ k8s_required_packages + k8s_required_packages_rhel }}"
+        state: present
+      become: true
+      when: ansible_pkg_mgr == 'yum'
+    
+    - name: Install Pre-reqs (DNF)
+      dnf:
+        name: "{{ k8s_required_packages + k8s_required_packages_rhel }}"
+        state: present
+      become: true
+      when: ansible_pkg_mgr == 'dnf'
+    
+    - name: Add Kubernetes Repository
+      yum_repository:
+        name: kubernetes
+        description: Kubernetes Repository
+        baseurl: https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version.split('.')[0] }}.{{ kubernetes_version.split('.')[1] }}/rpm/
+        gpgcheck: yes
+        gpgkey: https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version.split('.')[0] }}.{{ kubernetes_version.split('.')[1] }}/rpm/repodata/repomd.xml.key
+        enabled: yes
+      become: true
+  when: ansible_os_family == "RedHat"
+
+# Tasks for installing Kubeadm
+- name: Install Packages (Debian)
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    update_cache: yes
+  become: true
+  when: ansible_os_family == 'Debian'
+
+- name: Install Packages (RedHat - YUM)
+  yum:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    update_cache: yes
+  become: true
+  when: ansible_os_family == 'RedHat' and ansible_pkg_mgr == 'yum'
+
+- name: Install Packages (RedHat - DNF)
+  dnf:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+    update_cache: yes
+  become: true
+  when: ansible_os_family == 'RedHat' and ansible_pkg_mgr == 'dnf'
+
+
+- name: Enable & start kubelet
+  shell: systemctl enable --now kubelet
+  become: true
+
+- name: Add Init & Cluster & Kubelet Config
+  template:
+    src: kubeadm-config.yaml.j2
+    dest: /root/kubeadm-config.yaml
+    owner: root
+    group: root
+    mode: 0644
+
+- name: Install Control Plane
+  shell: |
+    kubeadm init --config=/root/kubeadm-config.yaml
+
+- name: Add uninstall script 
+  template:
+    src: uninstall.sh.j2
+    dest: /root/uninstall.sh
+    owner: root
+    group: root
+    mode: 0755
+
+

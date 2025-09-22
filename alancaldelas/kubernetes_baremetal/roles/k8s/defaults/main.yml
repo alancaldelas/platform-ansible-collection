@@ -1,3 +1,142 @@
 #SPDX-License-Identifier: MIT-0
 ---
 # defaults file for k8s
+user: amd
+
+# Kubernetes version and configuration
+kubernetes_version: "1.28.0"
+
+# System validation requirements
+k8s_min_cpu_cores: 2
+k8s_min_memory_mb: 2048
+k8s_min_disk_space_gb: 20
+k8s_min_kernel_version: "4.15"
+
+# Required mount points to check for disk space
+k8s_required_mount_points:
+  - "/"
+  - "/var"
+
+# Required kernel modules for Kubernetes
+k8s_required_kernel_modules:
+  - br_netfilter
+  - overlay
+  - ip_vs
+  - ip_vs_rr
+  - ip_vs_wrr
+  - ip_vs_sh
+  - nf_conntrack
+
+# Kernel parameters for Kubernetes
+k8s_kernel_parameters:
+  - name: net.bridge.bridge-nf-call-iptables
+    value: "1"
+  - name: net.bridge.bridge-nf-call-ip6tables
+    value: "1"
+  - name: net.ipv4.ip_forward
+    value: "1"
+  - name: net.ipv4.conf.all.forwarding
+    value: "1"
+  - name: net.ipv6.conf.all.forwarding
+    value: "1"
+  - name: net.netfilter.nf_conntrack_max
+    value: "131072"
+
+# Required network endpoints for connectivity checks
+k8s_required_endpoints:
+  - "https://registry.k8s.io"
+  - "https://github.com"
+  - "https://download.docker.com"
+
+# Network connectivity check control
+k8s_check_network_connectivity: true
+
+# Required ports that should be available (not in use)
+k8s_required_ports:
+  - 6443   # Kubernetes API server
+  - 2379   # etcd server client API
+  - 2380   # etcd server peer API
+  - 10250  # Kubelet API
+  - 10251  # kube-scheduler
+  - 10252  # kube-controller-manager
+  - 10255  # Read-only Kubelet API
+
+# Common packages required for Kubernetes
+k8s_required_packages:
+  - curl
+  - wget
+  - ca-certificates
+  - gnupg
+  - lsb-release
+
+# Debian/Ubuntu specific packages
+k8s_required_packages_debian:
+  - apt-transport-https
+  - software-properties-common
+
+# RHEL/CentOS specific packages
+k8s_required_packages_rhel:
+  - yum-utils
+  - device-mapper-persistent-data
+  - lvm2
+
+# Security and system configuration
+# SELinux configuration: disabled, permissive, enforcing, or current (no change)
+k8s_selinux_state: disabled
+k8s_selinux_policy: targeted
+
+# SELinux packages for Kubernetes (RHEL/CentOS only)
+k8s_selinux_packages_rhel:
+  - container-selinux
+  - selinux-policy-base
+
+# SELinux booleans for Kubernetes
+k8s_selinux_booleans:
+  - name: container_manage_cgroup
+    state: yes
+  - name: virt_use_nfs
+    state: yes
+  - name: virt_sandbox_use_all_caps
+    state: yes
+
+# Firewall configuration
+k8s_disable_firewall: false
+
+# Container runtime integration
+k8s_container_runtime: containerd  # containerd, crio, docker
+k8s_manage_container_runtime: true  # Whether this role should manage container runtime installation
+
+# Node role configuration
+k8s_node_role: worker  # master, worker, etcd
+
+# Cluster configuration
+k8s_cluster_name: kubernetes
+k8s_pod_subnet: "10.244.0.0/16"
+k8s_service_subnet: "10.96.0.0/12"
+
+# kubeadm configuration
+k8s_kubeadm_init_extra_args: ""
+k8s_kubeadm_join_extra_args: ""
+
+# Feature gates (optional)
+k8s_feature_gates: []
+
+# Additional kubelet arguments
+k8s_kubelet_extra_args: ""
+
+# CNI plugin selection
+k8s_cni_plugin: calico  # calico, flannel, weave, cilium
+
+# Source installation configuration
+k8s_build_user: "{{ user | default(ansible_user) }}"
+k8s_install_from_source: false
+
+# Go configuration for source builds
+go_version: "1.21.3"
+go_url: "https://golang.org/dl"
+go_tarball: "go{{ go_version }}.linux-amd64.tar.gz"
+
+# Kubernetes source repository configuration
+k8s_repo: "https://github.com/kubernetes/kubernetes.git"
+k8s_branch: "v{{ kubernetes_version }}"
+k8s_dir: "/opt/kubernetes"

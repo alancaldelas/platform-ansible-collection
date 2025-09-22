@@ -1,3 +1,24 @@
-#SPDX-License-Identifier: MIT-0
 ---
-# tasks file for k8s
+- name: System prep and validation
+  include_tasks: system_validation.yml
+  tags: ['system', 'validation']
+
+- name: Setup Container Runtime Using Runtime Role
+  include_role:
+    name: runtime
+  vars:
+    container_runtime: "{{ k8s_container_runtime | default('containerd') }}"
+    container_runtime_version: "{{ k8s_container_runtime_version | default('1.7.2') }}"
+  when: 
+    - k8s_manage_container_runtime | default(true)
+    - k8s_runtime_needs_install | default(true)
+  tags: ['runtime']
+
+- name: Install Kubernetes Components
+  include_tasks: kubernetes_install.yml
+  when: 
+    - k8s_install_from_source | default(false)
+
+- name: Install Kubernetes Components (From source)
+  include_tasks: kubernetes_install_source.yml
+  when: k8s_install_from_source | default(false)

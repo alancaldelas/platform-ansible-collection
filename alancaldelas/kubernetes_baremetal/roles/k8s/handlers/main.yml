@@ -1,3 +1,33 @@
 #SPDX-License-Identifier: MIT-0
 ---
 # handlers file for k8s
+
+- name: reboot system
+  reboot:
+    reboot_timeout: 600
+    connect_timeout: 20
+    test_command: whoami
+
+- name: restart kubelet
+  systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: yes
+
+- name: restart containerd
+  systemd:
+    name: containerd
+    state: restarted
+    daemon_reload: yes
+
+- name: restart crio
+  systemd:
+    name: crio
+    state: restarted
+    daemon_reload: yes
+
+- name: restart docker
+  systemd:
+    name: docker
+    state: restarted
+    daemon_reload: yes
