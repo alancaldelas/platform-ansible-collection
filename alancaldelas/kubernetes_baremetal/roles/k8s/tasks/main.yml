@@ -17,7 +17,7 @@
 - name: Install Kubernetes Components
   include_tasks: kubernetes_install.yml
   when: 
-    - k8s_install_from_source | default(false)
+    - not ( k8s_install_from_source | default(false) )
 
 - name: Install Kubernetes Components (From source)
   include_tasks: kubernetes_install_source.yml

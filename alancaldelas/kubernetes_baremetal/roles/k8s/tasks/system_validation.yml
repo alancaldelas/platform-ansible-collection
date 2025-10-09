@@ -23,8 +23,7 @@
   when: item.mount in k8s_required_mount_points
 
 - name: Check if required kernel modules are available
-  modinfo:
-    name: "{{ item }}"
+  shell: modinfo {{ item }}
   register: kernel_modules_check
   failed_when: false
   changed_when: false
@@ -137,20 +136,16 @@
     success_msg: "Port {{ item.item }} is available"
   loop: "{{ port_check.results }}"
 
-- name: Set kernel parameters for Kubernetes
-  sysctl:
-    name: "{{ item.name }}"
-    value: "{{ item.value }}"
-    state: present
-    reload: yes
-    sysctl_set: yes
-  loop: "{{ k8s_kernel_parameters }}"
-
 - name: Load required kernel modules
   modprobe:
     name: "{{ item }}"
     state: present
   loop: "{{ k8s_required_kernel_modules }}"
+
+- name: Load nf_conntrack module (required for conntrack_max sysctl)
+  modprobe:
+    name: nf_conntrack
+    state: present
 
 - name: Ensure kernel modules are loaded at boot
   lineinfile:
@@ -159,6 +154,15 @@
     create: yes
     mode: '0644'
   loop: "{{ k8s_required_kernel_modules }}"
+
+- name: Set kernel parameters for Kubernetes
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+    sysctl_set: yes
+  loop: "{{ k8s_kernel_parameters }}"
 
 - name: Install required packages for Kubernetes
   package:

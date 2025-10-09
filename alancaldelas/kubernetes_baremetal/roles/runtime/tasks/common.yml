@@ -19,20 +19,6 @@
     owner: root
     group: root
 
-- name: Set kernel parameters for containers
-  sysctl:
-    name: "{{ item.name }}"
-    value: "{{ item.value }}"
-    state: present
-    reload: yes
-  loop:
-    - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
-    - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
-    - { name: 'net.ipv4.ip_forward', value: '1' }
-    - { name: 'vm.overcommit_memory', value: '1' }
-    - { name: 'kernel.panic', value: '10' }
-    - { name: 'kernel.panic_on_oops', value: '1' }
-
 - name: Load required kernel modules
   modprobe:
     name: "{{ item }}"
@@ -49,6 +35,20 @@
   loop:
     - overlay
     - br_netfilter
+
+- name: Set kernel parameters for containers
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop:
+    - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+    - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+    - { name: 'net.ipv4.ip_forward', value: '1' }
+    - { name: 'vm.overcommit_memory', value: '1' }
+    - { name: 'kernel.panic', value: '10' }
+    - { name: 'kernel.panic_on_oops', value: '1' }
 
 - name: Disable swap
   command: swapoff -a
