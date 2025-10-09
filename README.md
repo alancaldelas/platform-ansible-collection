@@ -24,7 +24,6 @@ Create a playbook `deploy-k8s.yml`:
 
 ```yaml
 ---
----
 - name: Deploy Kubernetes on bare metal
   hosts: kubernetes_nodes
   become: yes
