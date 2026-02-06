@@ -1,0 +1,19 @@
+---
+- name: Create OpenShift Agent Image (ISO)
+  ansible.builtin.command:
+    cmd: "openshift-install agent create image --dir {{ openshift_installer_dir }}"
+  args:
+    creates: "{{ openshift_installer_dir }}/{{ openshift_iso_filename }}"
+  register: iso_generation
+  environment:
+    PATH: "{{ openshift_bin_dir }}:{{ ansible_env.PATH }}"
+
+- name: Verify ISO was created
+  ansible.builtin.stat:
+    path: "{{ openshift_installer_dir }}/{{ openshift_iso_filename }}"
+  register: iso_stat
+
+- name: Fail if ISO was not created
+  ansible.builtin.fail:
+    msg: "Failed to create OpenShift Agent ISO at {{ openshift_installer_dir }}/{{ openshift_iso_filename }}"
+  when: not iso_stat.stat.exists

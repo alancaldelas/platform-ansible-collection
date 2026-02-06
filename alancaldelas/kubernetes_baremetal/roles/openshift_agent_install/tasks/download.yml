@@ -1,0 +1,40 @@
+---
+- name: Check if openshift-install is in PATH
+  ansible.builtin.command: which openshift-install
+  register: check_openshift_install
+  ignore_errors: true
+  changed_when: false
+
+- name: Check if oc is in PATH
+  ansible.builtin.command: which oc
+  register: check_oc
+  ignore_errors: true
+  changed_when: false
+
+- name: Ensure bin directory exists
+  ansible.builtin.file:
+    path: "{{ openshift_bin_dir }}"
+    state: directory
+    mode: '0755'
+  when: check_openshift_install.rc != 0 or check_oc.rc != 0
+
+- name: Download Openshift Installer
+  ansible.builtin.unarchive:
+    src: "{{ openshift_installer_download_url }}"
+    dest: "{{ openshift_bin_dir }}"
+    remote_src: yes
+    mode: '0755'
+  when: check_openshift_install.rc != 0
+
+- name: Download Openshift Client
+  ansible.builtin.unarchive:
+    src: "{{ openshift_client_download_url }}"
+    dest: "{{ openshift_bin_dir }}"
+    remote_src: yes
+    mode: '0755'
+  when: check_oc.rc != 0
+
+- name: Add bin directory to PATH for current session
+  ansible.builtin.set_fact:
+    ansible_env: "{{ ansible_env | combine({'PATH': openshift_bin_dir + ':' + ansible_env.PATH}) }}"
+  when: check_openshift_install.rc != 0 or check_oc.rc != 0

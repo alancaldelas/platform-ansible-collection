@@ -1,0 +1,12 @@
+---
+- name: Download OpenShift Binaries
+  ansible.builtin.include_tasks: download.yml
+
+- name: Configure OpenShift Agent Installer
+  ansible.builtin.include_tasks: config.yml
+
+- name: Generate OpenShift Agent ISO
+  ansible.builtin.include_tasks: iso.yml
+
+- name: Deploy and Mount ISO via BMC
+  ansible.builtin.include_tasks: deploy.yml

@@ -1,0 +1,74 @@
+#SPDX-License-Identifier: MIT-0
+---
+# defaults file for openshift_agent_install
+
+ocp_version: 4.18
+ocp_branch: stable
+ocp_arch: amd64
+ocp_os: linux
+
+# Binary download locations
+openshift_installer_download_url: "https://mirror.openshift.com/pub/openshift-v4/{{ ocp_arch }}/clients/ocp/{{ ocp_branch }}-{{ ocp_version }}/openshift-install-{{ ocp_os }}.tar.gz"
+openshift_client_download_url: "https://mirror.openshift.com/pub/openshift-v4/{{ ocp_arch }}/clients/ocp/{{ ocp_branch }}-{{ ocp_version }}/openshift-client-{{ ocp_os }}.tar.gz"
+
+# Local installation directory for binaries if not in PATH
+openshift_bin_dir: "{{ ansible_env.HOME }}/bin"
+
+# OpenShift Cluster Configuration
+cluster_name: my-cluster
+base_domain: example.com
+openshift_ssh_key: ""
+pull_secret: ""
+
+# Cluster Type: sno, compact, or large
+cluster_type: "sno"
+control_plane_replicas: 1
+compute_replicas: 0
+
+# Network Config
+# For multi-node clusters, api_vip and ingress_vip are mandatory.
+api_vip: ""
+ingress_vip: ""
+machine_cidr: ""
+rendezvous_ip: ""
+gateway_ip: "192.168.1.1" # Default gateway for the network
+
+# Role variables
+openshift_installer_dir: "/opt/openshift-installer"
+openshift_iso_filename: "agent.iso"
+
+# BMC/Redfish config
+# Supported vendors: dell, hpe, lenovo, generic
+redfish_vendor_defaults:
+  dell:
+    manager_id: "iDRAC.Embedded.1"
+    system_id: "System.Embedded.1"
+    vmedia_id: "CD"
+  hpe:
+    manager_id: "1"
+    system_id: "1"
+    vmedia_id: "2"
+  lenovo:
+    manager_id: "1"
+    system_id: "1"
+    vmedia_id: "1"
+  generic:
+    manager_id: "1"
+    system_id: "1"
+    vmedia_id: "1"
+
+baremetal_nodes: []
+# Example:
+# baremetal_nodes:
+#   - hostname: master-1
+#     role: master
+#     vendor: dell # options: dell, hpe, lenovo, generic
+#     bmc:
+#       address: 192.168.1.100
+#       username: admin
+#       password: password
+#     nics:
+#       - name: eth0
+#         mac: 00:11:22:33:44:55
+#         ip: 192.168.1.10
+#     install_disk: /dev/sda

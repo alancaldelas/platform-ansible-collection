@@ -1,0 +1,67 @@
+---
+- name: Deploy OpenShift via Agent Installer on Baremetal
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    # Cluster Identification
+    cluster_name: "demo-cluster"
+    base_domain: "example.com"
+    pull_secret: "{{ lookup('file', '~/.pull-secret.json') }}"
+    openshift_ssh_key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+
+    # Cluster Topology
+    # "sno", "compact", "large"
+    cluster_type: "sno"
+    control_plane_replicas: 1
+    compute_replicas: 0
+
+    # Networking
+    machine_cidr: "192.168.1.0/24"
+    api_vip: "192.168.1.50"
+    ingress_vip: "192.168.1.51"
+    gateway_ip: "192.168.1.1"
+
+    # Baremetal Nodes Configuration
+    baremetal_nodes:
+      - hostname: "master-0"
+        role: "master"
+        vendor: "dell"
+        bmc:
+          address: "192.168.1.100"
+          username: "admin"
+          password: "password"
+        nics:
+          - name: "eth0"
+            mac: "00:11:22:33:44:55"
+            ip: "192.168.1.10/24"
+        install_disk: "/dev/sda"
+
+      - hostname: "master-1"
+        role: "master"
+        vendor: "hpe"
+        bmc:
+          address: "192.168.1.101"
+          username: "admin"
+          password: "password"
+        nics:
+          - name: "eth0"
+            mac: "00:11:22:33:44:56"
+            ip: "192.168.1.11/24"
+        install_disk: "/dev/nvme0n1"
+
+      - hostname: "master-2"
+        role: "master"
+        vendor: "lenovo"
+        bmc:
+          address: "192.168.1.102"
+          username: "admin"
+          password: "password"
+        nics:
+          - name: "eth0"
+            mac: "00:11:22:33:44:57"
+            ip: "192.168.1.12/24"
+        install_disk: "/dev/sda"
+
+  roles:
+    - role: alancaldelas.kubernetes_baremetal.openshift_agent_install

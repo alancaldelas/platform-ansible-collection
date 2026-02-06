@@ -1,0 +1,45 @@
+apiVersion: v1beta1
+kind: AgentConfig
+metadata:
+  name: {{ cluster_name }}
+spec:
+  {% if rendezvous_ip != "" %}
+  rendezvousIP: {{ rendezvous_ip }}
+  {% else %}
+  # Automatically select the first master host's IP as rendezvousIP
+  rendezvousIP: {{ (baremetal_nodes | selectattr('role', 'equalto', 'master') | first).nics[0].ip.split('/')[0] }}
+  {% endif %}
+  hosts:
+  {% for node in baremetal_nodes %}
+    - hostname: {{ node.hostname }}
+      role: {{ node.role }}
+      rootDeviceHints:
+        deviceName: {{ node.install_disk }}
+      interfaces:
+      {% for nic in node.nics %}
+        - name: {{ nic.name }}
+          macAddress: {{ nic.mac }}
+      {% endfor %}
+      networkConfig:
+        interfaces:
+        {% for nic in node.nics %}
+          - name: {{ nic.name }}
+            type: ethernet
+            state: up
+            ipv4:
+              address:
+                - ip: {{ nic.ip.split('/')[0] }}
+                  prefixLen: {{ nic.ip.split('/')[1] if '/' in nic.ip else '24' }}
+              enabled: true
+              dhcp: false
+        {% endfor %}
+        dns-resolver:
+          config:
+            server:
+              - {{ gateway_ip | default('8.8.8.8') }}
+        routes:
+          config:
+            - destination: 0.0.0.0/0
+              next-hop-address: {{ gateway_ip | default('192.168.1.1') }}
+              next-hop-interface: {{ node.nics[0].name }}
+  {% endfor %}

@@ -1,0 +1,59 @@
+---
+- name: Start local HTTP server to serve ISO
+  ansible.builtin.shell:
+    cmd: "nohup python3 -m http.server {{ http_server_port | default(8080) }} --directory {{ openshift_installer_dir }} > /tmp/iso_server.log 2>&1 &"
+  async: 10
+  poll: 0
+  changed_when: true
+
+- name: Wait for HTTP server to be ready
+  ansible.builtin.wait_for:
+    port: "{{ http_server_port | default(8080) }}"
+    timeout: 30
+
+- name: Get local IP address
+  ansible.builtin.setup:
+    gather_subset:
+      - network
+  register: node_facts
+
+- name: Set ISO URL
+  ansible.builtin.set_fact:
+    iso_url: "http://{{ ansible_default_ipv4.address }}:{{ http_server_port | default(8080) }}/{{ openshift_iso_filename }}"
+
+- name: Mount ISO via BMC (Redfish)
+  ansible.builtin.uri:
+    url: "https://{{ item.bmc.address }}/redfish/v1/Managers/{{ (redfish_vendor_defaults[item.vendor | default('generic')]).manager_id }}/VirtualMedia/{{ (redfish_vendor_defaults[item.vendor | default('generic')]).vmedia_id }}/Actions/VirtualMedia.InsertMedia"
+    method: POST
+    user: "{{ item.bmc.username }}"
+    password: "{{ item.bmc.password }}"
+    body_format: json
+    body:
+      Image: "{{ iso_url }}"
+      Inserted: true
+      WriteProtected: true
+    status_code: [200, 204]
+    validate_certs: no
+  loop: "{{ baremetal_nodes }}"
+  when: item.bmc is defined
+  register: bmc_mount
+  loop_control:
+    label: "{{ item.hostname }}"
+
+- name: Set nodes to boot from Virtual Media once
+  ansible.builtin.uri:
+    url: "https://{{ item.bmc.address }}/redfish/v1/Systems/{{ (redfish_vendor_defaults[item.vendor | default('generic')]).system_id }}"
+    method: PATCH
+    user: "{{ item.bmc.username }}"
+    password: "{{ item.bmc.password }}"
+    body_format: json
+    body:
+      Boot:
+        BootSourceOverrideTarget: Cd
+        BootSourceOverrideEnabled: Once
+    status_code: [200, 204]
+    validate_certs: no
+  loop: "{{ baremetal_nodes }}"
+  when: item.bmc is defined
+  loop_control:
+    label: "{{ item.hostname }}"
