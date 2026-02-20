@@ -1,0 +1,104 @@
+---
+- name: Start local HTTP server to serve ISO
+  ansible.builtin.shell:
+    cmd: "nohup python3 -m http.server {{ http_server_port | default(8080) }} --directory {{ openshift_installer_dir }} > /tmp/iso_server.log 2>&1 &"
+  async: 10
+  poll: 0
+  changed_when: true
+
+- name: Wait for HTTP server to be ready
+  ansible.builtin.wait_for:
+    port: "{{ http_server_port | default(8080) }}"
+    timeout: 30
+
+- name: Get local IP address
+  ansible.builtin.setup:
+    gather_subset:
+      - network
+  register: node_facts
+
+- name: Set ISO URL
+  ansible.builtin.set_fact:
+    iso_url: "http://{{ ansible_default_ipv4.address }}:{{ http_server_port | default(8080) }}/{{ openshift_iso_filename }}"
+
+- name: Attempt to Mount ISO via BMC (Redfish)
+  ansible.builtin.uri:
+    url: "https://{{ item.bmc.address }}/redfish/v1/Managers/{{ (redfish_vendor_defaults[item.vendor | default('generic')]).manager_id }}/VirtualMedia/{{ (redfish_vendor_defaults[item.vendor | default('generic')]).vmedia_id }}/Actions/VirtualMedia.InsertMedia"
+    method: POST
+    user: "{{ item.bmc.username }}"
+    password: "{{ item.bmc.password }}"
+    force_basic_auth: yes
+    body_format: json
+    body:
+      Image: "{{ iso_url }}"
+      Inserted: true
+      WriteProtected: true
+    status_code: [200, 204]
+    validate_certs: no
+  loop: "{{ baremetal_nodes }}"
+  when: item.bmc is defined
+  register: bmc_mount
+  ignore_errors: yes
+  loop_control:
+    label: "{{ item.hostname }}"
+
+- name: Set boot device to Virtual Media (Redfish)
+  ansible.builtin.uri:
+    url: "https://{{ item.item.bmc.address }}/redfish/v1/Systems/{{ (redfish_vendor_defaults[item.item.vendor | default('generic')]).system_id }}"
+    method: PATCH
+    user: "{{ item.item.bmc.username }}"
+    password: "{{ item.item.bmc.password }}"
+    force_basic_auth: yes
+    body_format: json
+    body:
+      Boot:
+        BootSourceOverrideTarget: Cd
+        BootSourceOverrideEnabled: Once
+    status_code: [200, 204]
+    validate_certs: no
+  loop: "{{ bmc_mount.results }}"
+  when: 
+    - not item.failed | default(false)
+    - not item.skipped | default(false)
+  loop_control:
+    label: "{{ item.item.hostname }}"
+
+- name: "Fallback: Set boot device via IPMI"
+  ansible.builtin.command:
+    cmd: "ipmitool -H {{ item.item.bmc.address }} -U {{ item.item.bmc.username }} -P {{ item.item.bmc.password }} -I lanplus chassis bootdev cdrom options=help"
+  register: ipmi_bootdev
+  loop: "{{ bmc_mount.results }}"
+  when: 
+    - item.failed | default(false)
+    - item.item.bmc is defined
+  loop_control:
+    label: "{{ item.item.hostname }}"
+  ignore_errors: yes
+
+- name: "Second Attempt: Set boot device via IPMI (Actual Command)"
+  ansible.builtin.command:
+    cmd: "ipmitool -H {{ item.item.bmc.address }} -U {{ item.item.bmc.username }} -P {{ item.item.bmc.password }} -I lanplus chassis bootdev cdrom"
+  loop: "{{ bmc_mount.results }}"
+  when: 
+    - item.failed | default(false)
+    - item.item.bmc is defined
+  loop_control:
+    label: "{{ item.item.hostname }}"
+  ignore_errors: yes
+
+- name: Notify User about Manual Steps
+  ansible.builtin.debug:
+    msg: |
+      WARNING: Redfish Virtual Media mounting failed for node {{ item.item.hostname }}.
+      This often happens on BMCs that are not fully 'Redfish-aware' for Virtual Media (like OpenBmc on AMD Cinnabar).
+      
+      We have attempted to set the boot device to CDROM via IPMI.
+      PLEASE MANUALLY MOUNT THE ISO IN THE BMC WEBUI (usually under the 'Operations' tab).
+      
+      ISO URL: {{ iso_url }}
+  loop: "{{ bmc_mount.results }}"
+  when: 
+    - item.failed | default(false)
+    - item.item.bmc is defined
+  loop_control:
+    label: "{{ item.item.hostname }}"

@@ -27,6 +27,9 @@ This role focuses strictly on baremetal deployments where nodes are managed via 
 If `control_plane_replicas > 1`, the following are required:
 - `api_vip`: The Virtual IP for the API.
 - `ingress_vip`: The Virtual IP for Ingress.
+- **DNS Records**: The following records must exist and point to the respective VIPs:
+  - `api.{{ cluster_name }}.{{ base_domain }}` -> `api_vip`
+  - `*.apps.{{ cluster_name }}.{{ base_domain }}` -> `ingress_vip`
 
 ### Optional Variables
 - `cluster_type`: `sno` (default), `compact`, or `large`.

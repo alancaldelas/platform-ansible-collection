@@ -35,7 +35,7 @@ gateway_ip: "192.168.1.1" # Default gateway for the network
 
 # Role variables
 openshift_installer_dir: "/opt/openshift-installer"
-openshift_iso_filename: "agent.iso"
+openshift_iso_filename: "agent.x86_64.iso"
 
 # BMC/Redfish config
 # Supported vendors: dell, hpe, lenovo, generic
@@ -52,10 +52,14 @@ redfish_vendor_defaults:
     manager_id: "1"
     system_id: "1"
     vmedia_id: "1"
+  openbmc:
+    manager_id: "bmc"
+    system_id: "system"
+    vmedia_id: "Legacy"
   generic:
-    manager_id: "1"
-    system_id: "1"
-    vmedia_id: "1"
+    manager_id: "bmc"
+    system_id: "system"
+    vmedia_id: "Legacy"
 
 baremetal_nodes: []
 # Example:

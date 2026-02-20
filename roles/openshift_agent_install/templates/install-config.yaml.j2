@@ -1,15 +1,15 @@
 apiVersion: v1
 baseDomain: {{ base_domain }}
 compute:
-- architecture: amd64
+- architecture: {{ ocp_arch }}
   hyperthreading: Enabled
   name: worker
-  replicas: {{ worker_nodes_count }}
+  replicas: {{ compute_replicas }}
 controlPlane:
-  architecture: amd64
+  architecture: {{ ocp_arch }}
   hyperthreading: Enabled
   name: master
-  replicas: {{ master_nodes_count }}
+  replicas: {{ control_plane_replicas }}
 metadata:
   name: {{ cluster_name }}
 networking:
@@ -22,12 +22,14 @@ networking:
   serviceNetwork:
   - 172.30.0.0/16
 platform:
+{% if control_plane_replicas | int > 1 or compute_replicas | int > 0 %}
   baremetal:
     apiVIPs:
-      # CHANGME
-      - {{ api_vip }}
+    - {{ api_vip }}
     ingressVIPs:
-      - {{ ingress_vip }}
-pullSecret: '{{ openshift_pull }}'
-sshKey: |
-    {{ openshift_ssh_key }}
+    - {{ ingress_vip }}
+{% else %}
+  none: {}
+{% endif %}
+pullSecret: {{ pull_secret | to_json | quote }}
+sshKey: {{ openshift_ssh_key | quote }}

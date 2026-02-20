@@ -1,4 +1,7 @@
 ---
+- name: Verify Prerequisites (DNS, etc.)
+  ansible.builtin.include_tasks: prereqs.yml
+
 - name: Download OpenShift Binaries
   ansible.builtin.include_tasks: download.yml
 

@@ -1,0 +1,41 @@
+---
+- name: Deploy OpenShift via Agent Installer on Baremetal
+  hosts: localhost
+  connection: local
+  become: yes
+  gather_facts: yes
+  vars:
+    # Cluster Identification
+    cluster_name: "ocp-demo"
+    base_domain: "oset.amd.com"
+    pull_secret: "{{ lookup('file', '~/.pull-secret.json') }}"
+    openshift_ssh_key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+
+    # Cluster Topology
+    # "sno", "compact", "large"
+    cluster_type: "sno"
+    control_plane_replicas: 1
+    compute_replicas: 0
+
+    # Networking
+    machine_cidr: "10.216.188.0/23"
+    api_vip: "10.216.188.90"
+    ingress_vip: "10.216.188.90"
+    gateway_ip: "10.216.188.254"
+
+    # Baremetal Nodes Configuration
+    baremetal_nodes:
+      - hostname: "master-0"
+        role: "master"
+        vendor: "openbmc"
+        bmc:
+          address: "cinnabar-308b.oset.amd.com"
+          username: "root"
+          password: "0penBmc"
+        nics:
+          - name: "eth0"
+            mac: "00:00:1a:1f:30:8b"
+            ip: "10.216.188.90/23"
+        install_disk: "/dev/sda"
+  roles:
+    - role: alancaldelas/kubernetes_baremetal/roles/openshift_agent_install

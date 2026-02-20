@@ -1,0 +1,54 @@
+---
+- name: Check for nmstatectl
+  ansible.builtin.command: which nmstatectl
+  register: nmstate_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Install nmstate if missing
+  when: nmstate_check.rc != 0
+  block:
+    - name: Install nmstate (RedHat)
+      ansible.builtin.package:
+        name: nmstate
+        state: present
+      when: ansible_os_family == "RedHat"
+      become: yes
+
+    - name: Install nmstate (Debian)
+      ansible.builtin.package:
+        name: nmstate
+        state: present
+      when: ansible_os_family == "Debian"
+      become: yes
+
+    - name: Re-check for nmstatectl after installation
+      ansible.builtin.command: which nmstatectl
+      register: nmstate_recheck
+      failed_when: nmstate_recheck.rc != 0
+      changed_when: false
+
+- name: Verify DNS configuration for multi-node clusters
+  when: cluster_type in ['compact', 'large'] or control_plane_replicas | int > 1
+  block:
+    - name: Check if API DNS entry exists and matches api_vip
+      ansible.builtin.command: "dig +short api.{{ cluster_name }}.{{ base_domain }}"
+      register: api_dns_check
+      changed_when: false
+      failed_when: 
+        - api_dns_check.stdout == "" or api_dns_check.stdout != api_vip
+      vars:
+        api_fqdn: "api.{{ cluster_name }}.{{ base_domain }}"
+
+    - name: Check if Ingress DNS entry exists and matches ingress_vip
+      ansible.builtin.command: "dig +short ingress-test.apps.{{ cluster_name }}.{{ base_domain }}"
+      register: ingress_dns_check
+      changed_when: false
+      failed_when: 
+        - ingress_dns_check.stdout == "" or ingress_dns_check.stdout != ingress_vip
+      vars:
+        ingress_fqdn: "ingress-test.apps.{{ cluster_name }}.{{ base_domain }}"
+
+    - name: DNS verification successful
+      ansible.builtin.debug:
+        msg: "DNS entries for API ({{ api_vip }}) and Ingress ({{ ingress_vip }}) verified successfully."
