@@ -50,9 +50,17 @@
     - { name: 'kernel.panic', value: '10' }
     - { name: 'kernel.panic_on_oops', value: '1' }
 
-- name: Disable swap
+- name: Check if swap is currently active
+  command: swapon -s
+  register: swap_active
+  failed_when: false
+  changed_when: false
+
+- name: Disable swap if active
   command: swapoff -a
-  when: ansible_swaptotal_mb > 0
+  when:
+    - swap_active.rc == 0
+    - swap_active.stdout != ""
 
 - name: Remove swap entry from /etc/fstab
   lineinfile:
@@ -60,28 +68,46 @@
     regexp: '^.*\s+swap\s+.*$'
     state: absent
 
-- name: Check if zswap is enabled (Fedora)
+- name: Mask swap target in systemd (RHEL-based systems)
+  systemd:
+    name: swap.target
+    masked: yes
+  failed_when: false
+  when: ansible_os_family == "RedHat"
+
+- name: Check if zswap is enabled (RHEL-based systems)
   command: cat /sys/module/zswap/parameters/enabled
   register: zswap_status
   failed_when: false
   changed_when: false
-  when: ansible_distribution == "Fedora"
+  when: ansible_os_family == "RedHat"
 
-- name: Disable zswap (Fedora)
+- name: Disable zswap immediately (RHEL-based systems)
   shell: echo 0 > /sys/module/zswap/parameters/enabled
-  when: 
-    - ansible_distribution == "Fedora"
+  when:
+    - ansible_os_family == "RedHat"
     - zswap_status.rc == 0
     - zswap_status.stdout == "Y"
 
-- name: Disable zswap permanently via kernel parameters (Fedora)
-  lineinfile:
+- name: Get current GRUB cmdline (RHEL-based systems)
+  command: grep '^GRUB_CMDLINE_LINUX=' /etc/default/grub
+  register: current_grub_cmdline
+  failed_when: false
+  changed_when: false
+  when: ansible_os_family == "RedHat"
+
+- name: Disable zswap permanently via kernel parameters (RHEL-based systems)
+  replace:
     path: /etc/default/grub
-    regexp: '^GRUB_CMDLINE_LINUX='
-    line: 'GRUB_CMDLINE_LINUX="zswap.enabled=0 {{ grub_cmdline_linux | default("") }}"'
+    regexp: '^(GRUB_CMDLINE_LINUX="(?!.*zswap\.enabled=0).*)"$'
+    replace: '\1 zswap.enabled=0"'
     backup: yes
-  when: ansible_distribution == "Fedora"
-  notify: update grub
+  when:
+    - ansible_os_family == "RedHat"
+    - zswap_status.rc == 0
+    - current_grub_cmdline.rc == 0
+    - '"zswap.enabled=0" not in current_grub_cmdline.stdout'
+  notify: update grub rhel
 
 - name: Download and install Go for source builds
   block:

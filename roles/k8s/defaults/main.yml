@@ -4,7 +4,7 @@
 user: amd
 
 # Kubernetes version and configuration
-kubernetes_version: "1.28.0"
+kubernetes_version: "1.35.3"
 
 # System validation requirements
 k8s_min_cpu_cores: 2
@@ -67,12 +67,12 @@ k8s_required_packages:
   - wget
   - ca-certificates
   - gnupg
-  - lsb-release
 
 # Debian/Ubuntu specific packages
 k8s_required_packages_debian:
   - apt-transport-https
   - software-properties-common
+  - lsb-release
 
 # RHEL/CentOS specific packages
 k8s_required_packages_rhel:
@@ -125,7 +125,14 @@ k8s_feature_gates: []
 k8s_kubelet_extra_args: ""
 
 # CNI plugin selection
-k8s_cni_plugin: calico  # calico, flannel, weave, cilium
+k8s_cni_plugin: cilium  # calico, flannel, weave, cilium
+k8s_install_cni: true  # Whether to install CNI plugin automatically
+
+# CNI plugin versions
+cilium_version: "1.19.2"
+calico_version: "3.25.0"
+flannel_version: "latest"
+weave_version: "2.8.1"
 
 # Source installation configuration
 k8s_build_user: "{{ user | default(ansible_user) }}"

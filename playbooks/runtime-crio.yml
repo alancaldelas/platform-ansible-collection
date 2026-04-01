@@ -1,0 +1,86 @@
+---
+# Runtime Installation - CRI-O
+#
+# This playbook installs the CRI-O container runtime on bare-metal nodes.
+# CRI-O is a lightweight container runtime specifically designed for Kubernetes.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/runtime-crio.yml
+#
+# Requirements:
+#   - Target nodes running Debian/Ubuntu or RHEL/CentOS/Fedora
+#   - Root or sudo access
+#   - Internet connectivity for downloading packages
+
+- name: Install CRI-O container runtime
+  hosts: k8s_nodes
+  become: yes
+
+  vars:
+    # Container runtime configuration
+    container_runtime: crio
+
+    # CRI-O version must match Kubernetes version (major.minor)
+    kubernetes_version: "1.28"
+
+    # Build method: 'binary' for package installation (recommended)
+    # or 'source' to compile from source
+    crio_build_method: binary
+
+    # Component versions for source builds
+    go_version: "1.21.3"
+    crio_build_dir: /tmp/crio-build
+
+    # Registry configuration
+    container_registries:
+      - quay.io
+      - registry.k8s.io
+      - docker.io
+
+    # Add insecure registries if needed (HTTP or self-signed certs)
+    # container_insecure_registries:
+    #   - localhost:5000
+    #   - harbor.internal.company.com
+
+    # Storage configuration
+    container_storage_driver: overlay2
+    container_storage_path: /var/lib/containers
+
+    # Log configuration
+    container_log_max_size: "10Mi"
+    container_log_max_files: 3
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.runtime
+
+  post_tasks:
+    - name: Verify CRI-O is running
+      systemd:
+        name: crio
+        state: started
+        enabled: yes
+      check_mode: yes
+      register: crio_status
+
+    - name: Display CRI-O status
+      debug:
+        msg: "CRI-O is {{ 'running' if crio_status.status.ActiveState == 'active' else 'not running' }}"
+
+    - name: Check CRI-O version
+      command: crio --version
+      register: crio_version_output
+      changed_when: false
+
+    - name: Display CRI-O version
+      debug:
+        var: crio_version_output.stdout_lines
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# k8s-master ansible_host=192.168.1.100 ansible_user=ubuntu
+# k8s-worker1 ansible_host=192.168.1.101 ansible_user=ubuntu
+# k8s-worker2 ansible_host=192.168.1.102 ansible_user=ubuntu
+#
+# [k8s_nodes:vars]
+# ansible_become=yes

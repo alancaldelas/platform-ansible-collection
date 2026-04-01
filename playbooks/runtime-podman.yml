@@ -1,0 +1,78 @@
+---
+# Runtime Installation - Podman
+#
+# This playbook installs the Podman container runtime on bare-metal nodes.
+# Podman is a daemonless container engine that can be used as a Docker alternative.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/runtime-podman.yml
+#
+# Requirements:
+#   - Target nodes running Debian/Ubuntu or RHEL/CentOS/Fedora
+#   - Root or sudo access
+#   - Internet connectivity for downloading packages
+
+- name: Install Podman container runtime
+  hosts: k8s_nodes
+  become: yes
+
+  vars:
+    # Container runtime configuration
+    container_runtime: podman
+
+    # Podman version (if specific version is supported)
+    container_runtime_version: "4.6.0"
+
+    # Registry configuration
+    container_registries:
+      - quay.io
+      - registry.k8s.io
+      - docker.io
+      - registry.fedoraproject.org
+      - registry.access.redhat.com
+
+    # Insecure registries (HTTP or self-signed certs)
+    # container_insecure_registries:
+    #   - localhost:5000
+    #   - registry.internal:8080
+
+    # Storage configuration
+    container_storage_driver: overlay2
+    container_storage_path: /var/lib/containers
+
+    # Log configuration
+    container_log_max_size: "10Mi"
+    container_log_max_files: 3
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.runtime
+
+  post_tasks:
+    - name: Check Podman version
+      command: podman --version
+      register: podman_version_output
+      changed_when: false
+
+    - name: Display Podman version
+      debug:
+        var: podman_version_output.stdout
+
+    - name: Test Podman functionality
+      command: podman info
+      register: podman_info
+      changed_when: false
+      failed_when: false
+
+    - name: Display Podman info summary
+      debug:
+        msg: "Podman is installed and functional"
+      when: podman_info.rc == 0
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# podman-node1 ansible_host=192.168.1.101 ansible_user=fedora
+# podman-node2 ansible_host=192.168.1.102 ansible_user=rhel
+#
+# [k8s_nodes:vars]
+# ansible_become=yes

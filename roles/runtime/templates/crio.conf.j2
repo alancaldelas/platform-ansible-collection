@@ -56,7 +56,8 @@ grpc_max_recv_msg_size = 16777216
 default_runtime = "runc"
 
 # no_pivot instructs the runtime to not use pivot_root, but instead use MS_MOVE.
-no_pivot = false
+# Required for ramdisk-booted systems (e.g., netboot, PXE boot).
+no_pivot = {{ container_no_pivot_root | default(false) | lower }}
 
 # decryption_keys_path is the path where keys required for
 # image decryption are stored.

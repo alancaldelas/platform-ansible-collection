@@ -5,11 +5,11 @@
 
 # Container runtime to install
 container_runtime: containerd  # or 'crio', 'docker'
-container_runtime_version: "1.7.2"
+container_runtime_version: "2.2.2"
 
 # Component versions for source installation
-runc_version: "1.1.9"
-cni_version: "1.3.0"
+runc_version: "1.2.2"
+cni_version: "1.5.1"
 
 # Build method: 'binary' (download pre-built) or 'source' (compile from source)
 containerd_build_method: binary
@@ -53,6 +53,11 @@ container_registry_mirrors: []
 # Storage
 container_storage_driver: overlay2
 container_storage_path: /var/lib/containers
+
+# Ramdisk boot support
+# Set to true when running on ramdisk-booted systems (e.g., netboot, PXE boot)
+# This disables pivot_root and uses MS_MOVE instead
+container_no_pivot_root: false
 
 # Kubernetes version for CRI-O compatibility
 kubernetes_version: "1.28"

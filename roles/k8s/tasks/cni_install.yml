@@ -1,0 +1,213 @@
+---
+# CNI Plugin Installation Tasks
+# Installs and configures Container Network Interface plugins for Kubernetes
+
+- name: Set CNI plugin facts
+  set_fact:
+    cni_manifests:
+      calico:
+        url: "https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/calico.yaml"
+        pod_subnet: "192.168.0.0/16"
+      flannel:
+        url: "https://github.com/flannel-io/flannel/releases/{{ flannel_version }}/download/kube-flannel.yml"
+        pod_subnet: "10.244.0.0/16"
+      weave:
+        url: "https://github.com/weaveworks/weave/releases/download/v{{ weave_version }}/weave-daemonset-k8s.yaml"
+        pod_subnet: "10.32.0.0/12"
+      cilium:
+        url: "https://raw.githubusercontent.com/cilium/cilium/v{{ cilium_version }}/install/kubernetes/cilium.yaml"
+        pod_subnet: "10.0.0.0/16"
+
+- name: Display CNI plugin selection
+  debug:
+    msg: "Installing CNI plugin: {{ k8s_cni_plugin | default('calico') }}"
+
+- name: Verify CNI plugin is supported
+  assert:
+    that:
+      - k8s_cni_plugin in ['calico', 'flannel', 'weave', 'cilium']
+    fail_msg: "CNI plugin '{{ k8s_cni_plugin }}' is not supported. Choose from: calico, flannel, weave, cilium"
+    success_msg: "CNI plugin '{{ k8s_cni_plugin }}' is supported"
+
+- name: Check if pod subnet matches CNI requirements
+  debug:
+    msg: >-
+      WARNING: Configured pod subnet ({{ k8s_pod_subnet }}) differs from {{ k8s_cni_plugin }}
+      default ({{ cni_manifests[k8s_cni_plugin].pod_subnet }}).
+      Make sure kubeadm was initialized with the correct pod subnet.
+  when: k8s_pod_subnet != cni_manifests[k8s_cni_plugin].pod_subnet
+
+- name: Wait for Kubernetes API to be ready
+  wait_for:
+    host: "{{ ansible_default_ipv4.address }}"
+    port: 6443
+    timeout: 300
+  when: k8s_node_role == 'master'
+
+- name: Check if CNI is already installed
+  command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get pods -n kube-system -l k8s-app={{ k8s_cni_plugin }} -o name
+  register: cni_check
+  failed_when: false
+  changed_when: false
+  when: k8s_node_role == 'master'
+
+- name: Download CNI manifest - Calico
+  get_url:
+    url: "{{ cni_manifests.calico.url }}"
+    dest: /tmp/calico.yaml
+    mode: '0644'
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'calico'
+    - cni_check.stdout == ""
+
+- name: Modify Calico pod CIDR if needed
+  replace:
+    path: /tmp/calico.yaml
+    regexp: '192\.168\.0\.0/16'
+    replace: "{{ k8s_pod_subnet }}"
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'calico'
+    - cni_check.stdout == ""
+    - k8s_pod_subnet != "192.168.0.0/16"
+
+- name: Install Calico CNI
+  command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /tmp/calico.yaml
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'calico'
+    - cni_check.stdout == ""
+  register: calico_install
+
+- name: Download CNI manifest - Flannel
+  get_url:
+    url: "{{ cni_manifests.flannel.url }}"
+    dest: /tmp/flannel.yaml
+    mode: '0644'
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'flannel'
+    - cni_check.stdout == ""
+
+- name: Modify Flannel pod CIDR if needed
+  replace:
+    path: /tmp/flannel.yaml
+    regexp: '10\.244\.0\.0/16'
+    replace: "{{ k8s_pod_subnet }}"
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'flannel'
+    - cni_check.stdout == ""
+    - k8s_pod_subnet != "10.244.0.0/16"
+
+- name: Install Flannel CNI
+  command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /tmp/flannel.yaml
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'flannel'
+    - cni_check.stdout == ""
+  register: flannel_install
+
+- name: Download CNI manifest - Weave
+  get_url:
+    url: "{{ cni_manifests.weave.url }}"
+    dest: /tmp/weave.yaml
+    mode: '0644'
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'weave'
+    - cni_check.stdout == ""
+
+- name: Install Weave CNI
+  command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /tmp/weave.yaml
+  environment:
+    IPALLOC_RANGE: "{{ k8s_pod_subnet }}"
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'weave'
+    - cni_check.stdout == ""
+  register: weave_install
+
+- name: Download Cilium CLI
+  get_url:
+    url: "https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz"
+    dest: /tmp/cilium-cli.tar.gz
+    mode: '0644'
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+    - cni_check.stdout == ""
+
+- name: Extract Cilium CLI
+  unarchive:
+    src: /tmp/cilium-cli.tar.gz
+    dest: /usr/local/bin
+    remote_src: yes
+    mode: '0755'
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+    - cni_check.stdout == ""
+
+- name: Install Cilium CNI using CLI
+  command: /usr/local/bin/cilium install --version {{ cilium_version }}
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+    - cni_check.stdout == ""
+  register: cilium_install
+
+- name: Clean up Cilium CLI tarball
+  file:
+    path: /tmp/cilium-cli.tar.gz
+    state: absent
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+
+- name: Wait for CNI pods to be ready (Calico/Flannel/Weave)
+  command: kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=ready --timeout=300s pods -n kube-system -l k8s-app={{ k8s_cni_plugin }}
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin in ['calico', 'flannel', 'weave']
+    - (calico_install.changed | default(false)) or
+      (flannel_install.changed | default(false)) or
+      (weave_install.changed | default(false))
+  register: cni_wait
+  failed_when: false
+
+- name: Wait for Cilium pods to be ready
+  command: kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=ready --timeout=300s pods -n kube-system -l k8s-app=cilium
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+    - cilium_install.changed | default(false)
+  register: cilium_wait
+  failed_when: false
+
+- name: Display CNI installation status
+  debug:
+    msg: >-
+      {% if cni_check.stdout != "" %}
+      CNI plugin {{ k8s_cni_plugin }} is already installed.
+      {% elif (cni_wait.rc | default(1)) == 0 or (cilium_wait.rc | default(1)) == 0 %}
+      CNI plugin {{ k8s_cni_plugin }} installed successfully and pods are ready.
+      {% else %}
+      CNI plugin {{ k8s_cni_plugin }} installed but pods may still be initializing.
+      Check with: kubectl get pods -n kube-system
+      {% endif %}
+  when: k8s_node_role == 'master'
+
+- name: Clean up downloaded manifests
+  file:
+    path: "/tmp/{{ item }}.yaml"
+    state: absent
+  loop:
+    - calico
+    - flannel
+    - weave
+    - cilium
+  when: k8s_node_role == 'master'

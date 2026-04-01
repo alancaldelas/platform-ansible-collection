@@ -1,0 +1,82 @@
+---
+# Runtime Installation - Docker
+#
+# This playbook installs the Docker container runtime on bare-metal nodes.
+# Note: Docker support in Kubernetes has been deprecated. Consider using
+# containerd or CRI-O for new deployments.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/runtime-docker.yml
+#
+# Requirements:
+#   - Target nodes running Debian/Ubuntu or RHEL/CentOS/Fedora
+#   - Root or sudo access
+#   - Internet connectivity for downloading packages
+
+- name: Install Docker container runtime
+  hosts: k8s_nodes
+  become: yes
+
+  vars:
+    # Container runtime configuration
+    container_runtime: docker
+    container_runtime_version: "24.0.7"
+
+    # Registry configuration
+    container_registries:
+      - quay.io
+      - registry.k8s.io
+      - docker.io
+
+    # Insecure registries (HTTP or self-signed certs)
+    # container_insecure_registries:
+    #   - localhost:5000
+    #   - registry.local:8080
+
+    # Storage configuration
+    container_storage_driver: overlay2
+    container_storage_path: /var/lib/docker
+
+    # Log configuration
+    container_log_max_size: "10Mi"
+    container_log_max_files: 3
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.runtime
+
+  post_tasks:
+    - name: Verify Docker is running
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+      check_mode: yes
+      register: docker_status
+
+    - name: Display Docker status
+      debug:
+        msg: "Docker is {{ 'running' if docker_status.status.ActiveState == 'active' else 'not running' }}"
+
+    - name: Check Docker version
+      command: docker --version
+      register: docker_version_output
+      changed_when: false
+
+    - name: Display Docker version
+      debug:
+        var: docker_version_output.stdout
+
+# Important Note:
+# ===============
+# Docker support has been removed from Kubernetes as of v1.24.
+# This playbook is provided for legacy systems only.
+# For new deployments, use containerd or CRI-O instead.
+#
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# docker-node1 ansible_host=192.168.1.101 ansible_user=ubuntu
+# docker-node2 ansible_host=192.168.1.102 ansible_user=centos
+#
+# [k8s_nodes:vars]
+# ansible_become=yes

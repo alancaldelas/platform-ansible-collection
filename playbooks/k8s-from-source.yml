@@ -1,0 +1,132 @@
+---
+# Kubernetes Installation from Source
+#
+# This playbook builds and installs Kubernetes from source code.
+# Use this for custom patches, bleeding-edge features, or development.
+#
+# WARNING: Building from source takes significantly longer (30-60 minutes)
+# and requires more resources than binary installation.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/k8s-from-source.yml
+#
+# Requirements:
+#   - Target node with minimum 4 CPU cores, 8GB RAM, 50GB disk
+#   - Internet connectivity to clone Kubernetes repository
+#   - Patience (build process can take 30-60 minutes)
+
+- name: Build and install Kubernetes from source
+  hosts: k8s_nodes
+  become: yes
+
+  vars:
+    # Kubernetes configuration
+    kubernetes_version: "1.28.0"
+
+    # Enable source installation
+    k8s_install_from_source: true
+
+    # Build configuration
+    k8s_build_user: "{{ ansible_user }}"
+    k8s_repo: "https://github.com/kubernetes/kubernetes.git"
+    k8s_branch: "v{{ kubernetes_version }}"
+    k8s_dir: "/opt/kubernetes"
+
+    # Go version for building (must be compatible with k8s version)
+    go_version: "1.21.3"
+    go_url: "https://golang.org/dl"
+
+    # Container runtime (will be installed from binary for speed)
+    k8s_container_runtime: containerd
+    k8s_manage_container_runtime: true
+    container_runtime_version: "1.7.2"
+    containerd_build_method: binary  # Use binary for runtime even when building k8s from source
+
+    # CNI plugin
+    k8s_cni_plugin: calico
+
+    # Cluster configuration
+    k8s_cluster_name: source-built-cluster
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+
+    # Higher resource requirements for building
+    k8s_min_cpu_cores: 4
+    k8s_min_memory_mb: 8192
+    k8s_min_disk_space_gb: 50
+
+  pre_tasks:
+    - name: Display build warning
+      debug:
+        msg:
+          - "=========================================="
+          - "WARNING: Building Kubernetes from source"
+          - "=========================================="
+          - "This process will:"
+          - "1. Download the Kubernetes source code (~500MB)"
+          - "2. Install Go compiler"
+          - "3. Compile Kubernetes binaries (30-60 minutes)"
+          - ""
+          - "Ensure you have:"
+          - "- Stable internet connection"
+          - "- At least 50GB free disk space"
+          - "- Time to wait for the build to complete"
+          - ""
+          - "Build will start in 10 seconds..."
+
+    - name: Pause to allow cancellation
+      pause:
+        seconds: 10
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+  post_tasks:
+    - name: Verify Kubernetes components
+      command: "{{ item }} --version"
+      loop:
+        - kubectl
+        - kubeadm
+        - kubelet
+      register: k8s_versions
+      changed_when: false
+
+    - name: Display component versions
+      debug:
+        msg: "{{ item.stdout }}"
+      loop: "{{ k8s_versions.results }}"
+      loop_control:
+        label: "{{ item.cmd }}"
+
+    - name: Get cluster status
+      command: kubectl get nodes -o wide
+      register: nodes_output
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display cluster status
+      debug:
+        var: nodes_output.stdout_lines
+
+    - name: Display build success message
+      debug:
+        msg:
+          - "=========================================="
+          - "Kubernetes built from source successfully!"
+          - "=========================================="
+          - "Source directory: {{ k8s_dir }}"
+          - "Branch/Version: {{ k8s_branch }}"
+          - ""
+          - "You can now use this cluster for:"
+          - "- Testing custom patches"
+          - "- Kubernetes development"
+          - "- Bleeding-edge features"
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# k8s-dev ansible_host=192.168.1.100 ansible_user=developer
+#
+# [k8s_nodes:vars]
+# ansible_become=yes

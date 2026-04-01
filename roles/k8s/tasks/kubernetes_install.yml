@@ -121,12 +121,13 @@
   shell: |
     kubeadm init --config=/root/kubeadm-config.yaml
 
-- name: Add uninstall script 
-  template:
-    src: uninstall.sh.j2
-    dest: /root/uninstall.sh
-    owner: root
-    group: root
-    mode: 0755
+# Uninstall script template not yet created - commented out
+#- name: Add uninstall script
+#  template:
+#    src: uninstall.sh.j2
+#    dest: /root/uninstall.sh
+#    owner: root
+#    group: root
+#    mode: 0755
 
 

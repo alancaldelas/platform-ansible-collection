@@ -1,0 +1,89 @@
+---
+# Kubernetes Installation with Calico CNI
+#
+# This playbook deploys Kubernetes with Calico CNI plugin.
+# Calico provides network policy support and is recommended for production.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/k8s-calico-cni.yml
+#
+# Requirements:
+#   - Target node with minimum 2 CPU cores, 2GB RAM, 20GB disk
+#   - Internet connectivity to download Calico manifests
+
+- name: Deploy Kubernetes with Calico CNI
+  hosts: k8s_nodes
+  become: yes
+
+  vars:
+    # Kubernetes configuration
+    kubernetes_version: "1.28.0"
+
+    # Container runtime
+    k8s_container_runtime: containerd
+    k8s_manage_container_runtime: true
+
+    # Calico CNI configuration
+    k8s_cni_plugin: calico
+
+    # Cluster configuration
+    k8s_cluster_name: calico-cluster
+
+    # IMPORTANT: Calico default pod CIDR is 192.168.0.0/16
+    # If you want to use a different CIDR, update both values below
+    k8s_pod_subnet: "192.168.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+  post_tasks:
+    - name: Wait for Calico pods to be ready
+      shell: |
+        kubectl get pods -n kube-system -l k8s-app=calico-node -o json | \
+        jq -r '.items[].status.phase' | grep -v Running
+      register: calico_status
+      until: calico_status.stdout_lines | length == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Get Calico node status
+      command: kubectl get pods -n kube-system -l k8s-app=calico-node -o wide
+      register: calico_nodes
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display Calico status
+      debug:
+        var: calico_nodes.stdout_lines
+
+    - name: Display Calico configuration notes
+      debug:
+        msg:
+          - "Calico CNI has been deployed!"
+          - ""
+          - "Calico Features:"
+          - "- Network policy enforcement"
+          - "- BGP routing (optional)"
+          - "- IP-in-IP or VXLAN encapsulation"
+          - "- High performance networking"
+          - ""
+          - "To view Calico configuration:"
+          - "  kubectl get felixconfiguration -A"
+          - "  kubectl get ippools -A"
+          - ""
+          - "To apply network policies, see:"
+          - "  https://docs.tigera.io/calico/latest/network-policy/"
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# k8s-calico ansible_host=192.168.1.100 ansible_user=ubuntu
+#
+# [k8s_nodes:vars]
+# ansible_become=yes

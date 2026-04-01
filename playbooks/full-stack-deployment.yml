@@ -1,0 +1,199 @@
+---
+# Full Stack Deployment - Runtime + Kubernetes
+#
+# This playbook demonstrates a complete deployment with explicit control over
+# both the container runtime and Kubernetes installation. This is useful when
+# you need custom runtime configuration or want to deploy them separately.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/full-stack-deployment.yml
+#
+# Requirements:
+#   - Target nodes with minimum 2 CPU cores, 4GB RAM, 50GB disk
+#   - Root or sudo access
+#   - Internet connectivity
+
+- name: Full stack deployment - Container runtime and Kubernetes
+  hosts: k8s_nodes
+  become: yes
+
+  vars:
+    # Container runtime configuration
+    container_runtime: containerd
+    container_runtime_version: "1.7.2"
+    containerd_build_method: binary
+    runc_version: "1.1.9"
+    cni_version: "1.3.0"
+
+    # Runtime storage and logging
+    container_storage_driver: overlay2
+    container_storage_path: /var/lib/containerd
+    container_log_max_size: "50Mi"
+    container_log_max_files: 5
+
+    # Registry configuration for runtime
+    container_registries:
+      - registry.k8s.io
+      - quay.io
+      - docker.io
+
+    # Add your private registries here
+    # container_insecure_registries:
+    #   - harbor.company.com:5000
+
+    # Kubernetes configuration
+    kubernetes_version: "1.28.0"
+    k8s_container_runtime: containerd
+    k8s_manage_container_runtime: false  # We install it explicitly below
+
+    # CNI plugin
+    k8s_cni_plugin: calico
+
+    # Cluster configuration
+    k8s_cluster_name: fullstack-cluster
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+
+    # System requirements
+    k8s_min_cpu_cores: 2
+    k8s_min_memory_mb: 4096
+    k8s_min_disk_space_gb: 50
+
+  tasks:
+    - name: Display deployment plan
+      debug:
+        msg:
+          - "=========================================="
+          - "Full Stack Deployment Plan"
+          - "=========================================="
+          - "Phase 1: Install container runtime ({{ container_runtime }})"
+          - "Phase 2: Deploy Kubernetes {{ kubernetes_version }}"
+          - "Phase 3: Configure CNI ({{ k8s_cni_plugin }})"
+          - ""
+
+    # Phase 1: Install Container Runtime
+    - name: "Phase 1: Install container runtime"
+      block:
+        - name: Install and configure container runtime
+          include_role:
+            name: alancaldelas.kubernetes_baremetal.runtime
+
+        - name: Verify runtime is running
+          systemd:
+            name: "{{ container_runtime }}"
+            state: started
+            enabled: yes
+          register: runtime_status
+
+        - name: Display runtime status
+          debug:
+            msg: "Container runtime {{ container_runtime }} is running"
+
+      tags:
+        - runtime
+
+    # Phase 2: Deploy Kubernetes
+    - name: "Phase 2: Deploy Kubernetes"
+      block:
+        - name: Install and configure Kubernetes
+          include_role:
+            name: alancaldelas.kubernetes_baremetal.k8s
+
+        - name: Wait for cluster to be ready
+          command: kubectl get nodes
+          register: nodes_status
+          until: "'Ready' in nodes_status.stdout or 'NotReady' in nodes_status.stdout"
+          retries: 30
+          delay: 10
+          changed_when: false
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+
+        - name: Display node status
+          command: kubectl get nodes -o wide
+          register: nodes_output
+          changed_when: false
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+
+        - name: Show nodes
+          debug:
+            var: nodes_output.stdout_lines
+
+      tags:
+        - kubernetes
+
+    # Phase 3: Verify CNI and System Pods
+    - name: "Phase 3: Verify cluster components"
+      block:
+        - name: Wait for system pods
+          shell: |
+            kubectl get pods -n kube-system --no-headers | \
+            grep -v Running | grep -v Completed | wc -l
+          register: pending_pods
+          until: pending_pods.stdout | int == 0
+          retries: 30
+          delay: 10
+          changed_when: false
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+
+        - name: Get all system pods
+          command: kubectl get pods -A -o wide
+          register: all_pods
+          changed_when: false
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+
+        - name: Display all pods
+          debug:
+            var: all_pods.stdout_lines
+
+        - name: Get cluster information
+          command: kubectl cluster-info
+          register: cluster_info
+          changed_when: false
+          environment:
+            KUBECONFIG: /etc/kubernetes/admin.conf
+
+        - name: Display cluster info
+          debug:
+            var: cluster_info.stdout_lines
+
+      tags:
+        - verify
+
+    # Final summary
+    - name: Display deployment summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Full Stack Deployment Complete!"
+          - "=========================================="
+          - "Container Runtime: {{ container_runtime }} {{ container_runtime_version }}"
+          - "Kubernetes Version: {{ kubernetes_version }}"
+          - "CNI Plugin: {{ k8s_cni_plugin }}"
+          - "Cluster Name: {{ k8s_cluster_name }}"
+          - "Pod Network: {{ k8s_pod_subnet }}"
+          - "Service Network: {{ k8s_service_subnet }}"
+          - ""
+          - "Next steps:"
+          - "1. Copy kubeconfig: sudo cp /etc/kubernetes/admin.conf ~/.kube/config"
+          - "2. Deploy your applications"
+          - "3. Configure monitoring and logging"
+          - "4. Set up ingress controller"
+      tags:
+        - always
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# k8s-master ansible_host=192.168.1.100 ansible_user=ubuntu
+#
+# [k8s_nodes:vars]
+# ansible_become=yes
+#
+# Run specific phases with tags:
+#   ansible-playbook -i inventory playbooks/full-stack-deployment.yml --tags runtime
+#   ansible-playbook -i inventory playbooks/full-stack-deployment.yml --tags kubernetes
+#   ansible-playbook -i inventory playbooks/full-stack-deployment.yml --tags verify

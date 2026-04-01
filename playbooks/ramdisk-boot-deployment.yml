@@ -1,0 +1,223 @@
+---
+# Kubernetes Deployment for Ramdisk-Booted Systems
+# ================================================
+#
+# This playbook is specifically designed for systems that boot from ramdisk,
+# including:
+# - Network boot (PXE/iPXE)
+# - Diskless nodes
+# - Live boot systems
+# - Any system with root filesystem on ramdisk/tmpfs
+#
+# Key difference: Sets container_no_pivot_root=true to disable pivot_root
+# syscall, which doesn't work on ramdisk filesystems.
+#
+# Requirements:
+# - Systems booted from ramdisk (PXE, network boot, diskless)
+# - Persistent storage mounted (if needed for container data)
+# - Ansible 2.9+
+#
+# Usage:
+#   ansible-playbook -i inventory ramdisk-boot-deployment.yml
+#
+# Example Inventory (inventory.ini):
+# [ramdisk_nodes]
+# node1 ansible_host=192.168.1.101 ansible_user=ubuntu
+# node2 ansible_host=192.168.1.102 ansible_user=ubuntu
+#
+# [ramdisk_nodes:vars]
+# ansible_become=yes
+# ansible_python_interpreter=/usr/bin/python3
+
+- name: Deploy Kubernetes on Ramdisk-Booted Systems
+  hosts: ramdisk_nodes
+  become: yes
+  gather_facts: yes
+
+  vars:
+    # Kubernetes version
+    kubernetes_version: "1.28.0"
+
+    # Container runtime configuration
+    k8s_container_runtime: containerd
+    k8s_container_runtime_version: "1.7.2"
+
+    # CRITICAL: Enable no_pivot_root for ramdisk boot
+    # This disables pivot_root syscall and uses MS_MOVE instead
+    # Required for systems with root on ramdisk/tmpfs
+    container_no_pivot_root: true
+
+    # Storage configuration
+    # Consider mounting persistent storage for container data
+    container_storage_path: /var/lib/containers
+    container_log_max_size: "50Mi"
+    container_log_max_files: 5
+
+    # Cluster configuration
+    k8s_cluster_name: ramdisk-k8s
+    k8s_cni_plugin: calico
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+
+    # System requirements (adjust for ramdisk systems)
+    k8s_min_cpu_cores: 2
+    k8s_min_memory_mb: 4096  # More RAM needed for ramdisk
+    k8s_min_disk_space_gb: 20
+
+    # Disable swap check (ramdisk systems typically don't have swap)
+    # Note: Swap validation in k8s role should pass on ramdisk systems
+
+    # Registry configuration
+    container_registries:
+      - registry.k8s.io
+      - quay.io
+      - docker.io
+
+  pre_tasks:
+    - name: Display ramdisk boot warning
+      debug:
+        msg: |
+          ========================================
+          RAMDISK BOOT DEPLOYMENT
+          ========================================
+          This playbook configures container runtime for ramdisk-booted systems.
+
+          Key setting: container_no_pivot_root = true
+
+          This disables pivot_root in favor of MS_MOVE, which is required
+          for proper container operation on ramdisk root filesystems.
+
+          Ensure you have:
+          1. Sufficient RAM for containers + workloads
+          2. Persistent storage mounted (if needed)
+          3. Network connectivity for image pulls
+          ========================================
+
+    - name: Check if root is on ramdisk/tmpfs
+      shell: |
+        mount | grep -E "on / type (tmpfs|ramfs|rootfs)" || echo "NOT_RAMDISK"
+      register: root_mount_check
+      changed_when: false
+      failed_when: false
+
+    - name: Validate ramdisk boot
+      debug:
+        msg: |
+          Root filesystem check: {{ root_mount_check.stdout }}
+          {% if 'NOT_RAMDISK' in root_mount_check.stdout %}
+          WARNING: Root does not appear to be on ramdisk.
+          If this is incorrect, proceed anyway. If root is NOT on ramdisk,
+          consider using a standard deployment playbook instead.
+          {% else %}
+          CONFIRMED: Root filesystem is on ramdisk/tmpfs.
+          Proceeding with no_pivot_root configuration.
+          {% endif %}
+
+    - name: Check available memory
+      assert:
+        that:
+          - ansible_memtotal_mb >= 4096
+        fail_msg: |
+          Insufficient RAM for ramdisk deployment.
+          Available: {{ ansible_memtotal_mb }}MB
+          Recommended: 4096MB minimum (8GB+ for production)
+        success_msg: "RAM check passed: {{ ansible_memtotal_mb }}MB available"
+
+    - name: Verify persistent storage (if configured)
+      stat:
+        path: "{{ container_storage_path }}"
+      register: storage_path_check
+      when: container_storage_path != "/var/lib/containers"
+
+  roles:
+    # Install and configure container runtime with ramdisk support
+    - role: alancaldelas.kubernetes_baremetal.runtime
+      tags: ['runtime']
+      vars:
+        container_runtime: "{{ k8s_container_runtime }}"
+        container_runtime_version: "{{ k8s_container_runtime_version }}"
+
+    # Deploy Kubernetes cluster
+    - role: alancaldelas.kubernetes_baremetal.k8s
+      tags: ['k8s']
+
+  post_tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          ========================================
+          RAMDISK K8S DEPLOYMENT COMPLETE
+          ========================================
+          Cluster: {{ k8s_cluster_name }}
+          Runtime: {{ k8s_container_runtime }} (no_pivot_root enabled)
+          CNI: {{ k8s_cni_plugin }}
+          Storage: {{ container_storage_path }}
+
+          Next steps:
+          1. Configure kubectl access:
+             mkdir -p $HOME/.kube
+             sudo cp /etc/kubernetes/admin.conf $HOME/.kube/config
+             sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+          2. Verify cluster:
+             kubectl get nodes
+             kubectl get pods -A
+
+          3. Check container runtime:
+             systemctl status {{ k8s_container_runtime }}
+             {{ k8s_container_runtime }} version
+
+          IMPORTANT NOTES FOR RAMDISK SYSTEMS:
+          - Root filesystem is volatile (data lost on reboot)
+          - Ensure critical data is on persistent storage
+          - Consider mounting /var/lib/containers on persistent disk
+          - Container images will need to be re-pulled after reboot
+          - Consider using a local registry or image cache
+
+          Configuration applied:
+          - container_no_pivot_root: {{ container_no_pivot_root }}
+          - This setting is REQUIRED for ramdisk boot systems
+          ========================================
+
+    - name: Save ramdisk deployment info
+      copy:
+        content: |
+          Ramdisk Kubernetes Deployment Info
+          ===================================
+          Deployed: {{ ansible_date_time.iso8601 }}
+          Hostname: {{ ansible_hostname }}
+          Runtime: {{ k8s_container_runtime }}
+          No Pivot Root: {{ container_no_pivot_root }}
+          Storage Path: {{ container_storage_path }}
+
+          CRITICAL: This system was deployed with container_no_pivot_root=true
+          for ramdisk boot compatibility. Do not change this setting without
+          understanding the implications.
+
+          Root Filesystem: {{ root_mount_check.stdout }}
+        dest: /root/ramdisk-k8s-deployment.txt
+        mode: '0600'
+
+# Additional Notes:
+# ================
+#
+# Persistent Storage Recommendations:
+# - Mount persistent disk to /var/lib/containers for image storage
+# - Mount persistent disk to /var/lib/kubelet for pod data
+# - Consider local-path-provisioner for PVC support
+#
+# Network Boot Specifics:
+# - Ensure DHCP reservations for stable IPs
+# - Configure DNS for cluster nodes
+# - Consider using a local package mirror
+#
+# Performance Considerations:
+# - Ramdisk root provides fast filesystem operations
+# - More RAM needed than standard deployments
+# - Network I/O becomes more critical
+#
+# Troubleshooting:
+# - Check containerd config: cat /etc/containerd/config.toml | grep -i pivot
+# - Check CRI-O config: cat /etc/crio/crio.conf | grep -i pivot
+# - Verify setting: Should show NoPivotRoot = true or no_pivot = true
+# - Test container: kubectl run test --image=nginx --rm -it -- /bin/sh

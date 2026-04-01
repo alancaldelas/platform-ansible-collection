@@ -1,0 +1,80 @@
+---
+# Basic Single-Node Kubernetes Installation
+#
+# This playbook deploys a basic single-node Kubernetes cluster with default settings.
+# This is the simplest deployment option, suitable for development and testing.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/k8s-single-node-basic.yml
+#
+# Requirements:
+#   - Target node with minimum 2 CPU cores, 2GB RAM, 20GB disk
+#   - Debian/Ubuntu or RHEL/CentOS/Fedora
+#   - Root or sudo access
+#   - Internet connectivity
+
+- name: Deploy basic single-node Kubernetes cluster
+  hosts: k8s_master
+  become: yes
+
+  vars:
+    # Kubernetes version
+    kubernetes_version: "1.28.0"
+
+    # Container runtime (will be installed automatically)
+    k8s_container_runtime: containerd
+    k8s_manage_container_runtime: true
+
+    # CNI plugin selection
+    k8s_cni_plugin: calico  # calico, flannel, weave, or cilium
+
+    # Cluster configuration
+    k8s_cluster_name: dev-cluster
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+  post_tasks:
+    - name: Wait for cluster to be ready
+      command: kubectl get nodes
+      register: nodes_status
+      until: "'Ready' in nodes_status.stdout"
+      retries: 30
+      delay: 10
+      changed_when: false
+      become_user: "{{ ansible_user }}"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display cluster nodes
+      command: kubectl get nodes -o wide
+      register: nodes_output
+      changed_when: false
+      become_user: "{{ ansible_user }}"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Show cluster status
+      debug:
+        var: nodes_output.stdout_lines
+
+    - name: Display next steps
+      debug:
+        msg:
+          - "Kubernetes cluster is now running!"
+          - "To access the cluster, copy the kubeconfig:"
+          - "  mkdir -p $HOME/.kube"
+          - "  sudo cp /etc/kubernetes/admin.conf $HOME/.kube/config"
+          - "  sudo chown $(id -u):$(id -g) $HOME/.kube/config"
+          - ""
+          - "Then verify with: kubectl get nodes"
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_master]
+# k8s-node ansible_host=192.168.1.100 ansible_user=ubuntu
+#
+# [k8s_master:vars]
+# ansible_become=yes

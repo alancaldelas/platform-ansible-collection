@@ -89,6 +89,14 @@ container_log_max_size: "10Mi"
 container_log_max_files: 3
 ```
 
+### Ramdisk Boot Support
+```yaml
+# Set to true for ramdisk-booted systems (netboot, PXE, diskless)
+container_no_pivot_root: false
+```
+
+**Important**: When deploying on ramdisk-booted systems (e.g., network boot, PXE boot, diskless nodes), set `container_no_pivot_root: true`. This disables pivot_root in both containerd and CRI-O, using MS_MOVE instead, which is required for proper container operation on ramdisk root filesystems.
+
 ### Build Configuration (Source Installation)
 ```yaml
 # Build directories
@@ -276,6 +284,21 @@ container_log_max_files: 10
 container_storage_path: /fast-ssd/containers  # Use fast storage
 ```
 
+### Ramdisk-Booted Systems
+For network/PXE boot or diskless nodes:
+
+```yaml
+---
+- hosts: netboot_nodes
+  become: yes
+  roles:
+    - alancaldelas.kubernetes_baremetal.runtime
+  vars:
+    container_runtime: containerd
+    container_no_pivot_root: true  # Required for ramdisk boot
+    container_storage_path: /var/lib/containers
+```
+
 ## Troubleshooting
 
 ### Common Issues
@@ -294,6 +317,11 @@ container_storage_path: /fast-ssd/containers  # Use fast storage
    - Check available disk space
    - Verify storage path permissions
    - Confirm storage driver compatibility
+
+4. **Ramdisk boot failures**
+   - Error: "pivot_root: invalid argument" or container start failures
+   - Solution: Set `container_no_pivot_root: true` for ramdisk-booted systems
+   - Affects: Network boot, PXE boot, diskless nodes, or any system with root on ramdisk
 
 ### Debug Mode
 Enable verbose logging by setting debug level in runtime configuration.

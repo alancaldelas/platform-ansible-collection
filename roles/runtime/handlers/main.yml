@@ -26,6 +26,6 @@
     state: restarted
     daemon_reload: yes
 
-- name: update grub
+- name: update grub rhel
   command: grub2-mkconfig -o /boot/grub2/grub.cfg
-  when: ansible_distribution == "Fedora"
+  when: ansible_os_family == "RedHat"

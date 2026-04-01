@@ -3,15 +3,27 @@
   include_tasks: system_validation.yml
   tags: ['system', 'validation']
 
-- name: Setup Container Runtime Using Runtime Role
+- name: Setup Container Runtime Using Runtime Role (with explicit version)
   include_role:
     name: runtime
   vars:
     container_runtime: "{{ k8s_container_runtime | default('containerd') }}"
-    container_runtime_version: "{{ k8s_container_runtime_version | default('1.7.2') }}"
-  when: 
+    container_runtime_version: "{{ k8s_container_runtime_version }}"
+  when:
     - k8s_manage_container_runtime | default(true)
     - k8s_runtime_needs_install | default(true)
+    - k8s_container_runtime_version is defined
+  tags: ['runtime']
+
+- name: Setup Container Runtime Using Runtime Role (use runtime role defaults)
+  include_role:
+    name: runtime
+  vars:
+    container_runtime: "{{ k8s_container_runtime | default('containerd') }}"
+  when:
+    - k8s_manage_container_runtime | default(true)
+    - k8s_runtime_needs_install | default(true)
+    - k8s_container_runtime_version is not defined
   tags: ['runtime']
 
 - name: Install Kubernetes Components
@@ -22,3 +34,10 @@
 - name: Install Kubernetes Components (From source)
   include_tasks: kubernetes_install_source.yml
   when: k8s_install_from_source | default(false)
+
+- name: Install CNI Plugin
+  include_tasks: cni_install.yml
+  when:
+    - k8s_install_cni | default(true)
+    - k8s_node_role == 'master'
+  tags: ['cni']

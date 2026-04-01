@@ -1,0 +1,158 @@
+---
+# Production Kubernetes Installation with Validation
+#
+# This playbook deploys a production-ready single-node Kubernetes cluster with:
+# - Hardware validation before installation
+# - Enhanced system requirements
+# - Production-grade logging and monitoring
+# - Custom network configuration
+# - SELinux enforcement (RHEL/CentOS)
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/k8s-production-validated.yml
+#
+# Requirements:
+#   - Target node with minimum 4 CPU cores, 8GB RAM, 100GB disk
+#   - Production-grade hardware
+#   - Static IP address
+#   - Root or sudo access
+
+- name: Validate hardware before installation
+  hosts: k8s_production
+  become: yes
+
+  pre_tasks:
+    - name: Run hardware validation
+      include_role:
+        name: alancaldelas.kubernetes_baremetal.hardware_validation
+      vars:
+        hw_min_cpu_cores: 4
+        hw_min_memory_gb: 8
+        hw_min_disk_size_gb: 100
+        hw_required_nics: 1
+        hw_min_nic_speed_mbps: 1000
+
+- name: Deploy production Kubernetes cluster
+  hosts: k8s_production
+  become: yes
+
+  vars:
+    # Kubernetes version (use stable production version)
+    kubernetes_version: "1.28.0"
+
+    # System validation - higher requirements for production
+    k8s_min_cpu_cores: 4
+    k8s_min_memory_mb: 8192
+    k8s_min_disk_space_gb: 100
+    k8s_min_kernel_version: "4.15"
+
+    # Container runtime configuration
+    k8s_container_runtime: containerd
+    k8s_manage_container_runtime: true
+    container_runtime_version: "1.7.2"
+    containerd_build_method: binary
+
+    # Enhanced storage configuration for production
+    container_storage_path: /opt/containerd/storage
+    container_log_max_size: "50Mi"
+    container_log_max_files: 5
+
+    # Registry configuration with company registries
+    container_registries:
+      - registry.k8s.io
+      - quay.io
+      # - harbor.company.com  # Add your company registry
+
+    # CNI plugin (Calico recommended for production)
+    k8s_cni_plugin: calico
+
+    # Cluster configuration with custom networks
+    k8s_cluster_name: production-k8s
+    k8s_pod_subnet: "10.100.0.0/16"
+    k8s_service_subnet: "10.200.0.0/16"
+
+    # Security configuration (RHEL/CentOS)
+    # Note: Set to 'enforcing' only if you've tested SELinux compatibility
+    k8s_selinux_state: permissive  # disabled, permissive, or enforcing
+    k8s_selinux_policy: targeted
+
+    # Do not disable firewall in production
+    k8s_disable_firewall: false
+
+    # Feature gates for production features
+    k8s_feature_gates:
+      - "GracefulNodeShutdown=true"
+      - "MemoryManager=true"
+
+    # Additional kubelet arguments for production
+    k8s_kubelet_extra_args: >-
+      --max-pods=110
+      --kube-reserved=cpu=500m,memory=512Mi
+      --system-reserved=cpu=500m,memory=512Mi
+      --eviction-hard=memory.available<500Mi,nodefs.available<10%
+
+    # Network connectivity validation
+    k8s_check_network_connectivity: true
+    k8s_required_endpoints:
+      - "https://registry.k8s.io"
+      - "https://github.com"
+      # - "https://harbor.company.com"  # Add your endpoints
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+  post_tasks:
+    - name: Wait for all system pods to be ready
+      shell: |
+        kubectl get pods -n kube-system -o json | \
+        jq -r '.items[] | select(.status.phase != "Running" or
+        ([ .status.conditions[] | select(.type == "Ready" and .status == "False") ]
+        | length ) > 0 ) | .metadata.namespace + "/" + .metadata.name'
+      register: not_ready_pods
+      until: not_ready_pods.stdout_lines | length == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Get cluster info
+      command: kubectl cluster-info
+      register: cluster_info
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display cluster information
+      debug:
+        var: cluster_info.stdout_lines
+
+    - name: Create production checklist
+      debug:
+        msg:
+          - "=========================================="
+          - "Production Kubernetes Cluster Deployed"
+          - "=========================================="
+          - "Cluster Name: {{ k8s_cluster_name }}"
+          - "Kubernetes Version: {{ kubernetes_version }}"
+          - "Container Runtime: {{ k8s_container_runtime }}"
+          - "CNI Plugin: {{ k8s_cni_plugin }}"
+          - ""
+          - "Next Steps:"
+          - "1. Configure monitoring (Prometheus/Grafana)"
+          - "2. Set up log aggregation (ELK/Loki)"
+          - "3. Configure backup solution (Velero)"
+          - "4. Implement network policies"
+          - "5. Set up RBAC and service accounts"
+          - "6. Configure resource quotas and limits"
+          - "7. Test disaster recovery procedures"
+          - "8. Document cluster configuration"
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_production]
+# prod-k8s-01 ansible_host=10.0.1.100 ansible_user=admin
+#
+# [k8s_production:vars]
+# ansible_become=yes
+# ansible_ssh_private_key_file=~/.ssh/prod_key

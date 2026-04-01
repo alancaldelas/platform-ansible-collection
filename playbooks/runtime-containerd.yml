@@ -1,0 +1,79 @@
+---
+# Runtime Installation - containerd
+#
+# This playbook installs the containerd container runtime on bare-metal nodes.
+# containerd is the industry-standard container runtime, recommended for production use.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/runtime-containerd.yml
+#
+# Requirements:
+#   - Target nodes running Debian/Ubuntu or RHEL/CentOS/Fedora
+#   - Root or sudo access
+#   - Internet connectivity for downloading binaries
+
+- name: Install containerd container runtime
+  hosts: all
+  become: yes
+
+  vars:
+    # Container runtime configuration
+    container_runtime: containerd
+    container_runtime_version: "1.7.2"
+
+    # Build method: 'binary' for pre-built binaries (fast, recommended)
+    # or 'source' to compile from source (for custom patches)
+    containerd_build_method: binary
+
+    # Component versions (used for source builds)
+    runc_version: "1.1.9"
+    cni_version: "1.3.0"
+    go_version: "1.21.3"
+
+    # Registry configuration
+    # Standard registries (HTTPS)
+    container_registries:
+      - quay.io
+      - registry.k8s.io
+      - docker.io
+
+    # Insecure registries (HTTP or self-signed certs)
+    # Uncomment and add your private registries here
+    # container_insecure_registries:
+    #   - localhost:5000
+    #   - registry.internal.company.com:8080
+
+    # Storage configuration
+    container_storage_driver: overlay2
+    container_storage_path: /var/lib/containerd
+
+    # Log configuration
+    container_log_max_size: "10Mi"
+    container_log_max_files: 3
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.runtime
+
+  post_tasks:
+    - name: Verify containerd is running
+      systemd:
+        name: containerd
+        state: started
+        enabled: yes
+      check_mode: yes
+      register: containerd_status
+
+    - name: Display containerd status
+      debug:
+        msg: "containerd is {{ 'running' if containerd_status.status.ActiveState == 'active' else 'not running' }}"
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# node1 ansible_host=192.168.1.101 ansible_user=ubuntu
+# node2 ansible_host=192.168.1.102 ansible_user=ubuntu
+# node3 ansible_host=192.168.1.103 ansible_user=ubuntu
+#
+# [k8s_nodes:vars]
+# ansible_become=yes
+# ansible_ssh_private_key_file=~/.ssh/id_rsa

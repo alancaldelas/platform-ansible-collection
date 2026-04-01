@@ -1,0 +1,231 @@
+---
+# Air-Gapped / Offline Installation
+#
+# This playbook deploys Kubernetes in an air-gapped environment where nodes
+# cannot access the internet. It requires pre-staged binaries and container images.
+#
+# Prerequisites:
+# 1. Pre-download all required binaries to a local mirror/repository
+# 2. Set up a local container registry with all required images
+# 3. Configure local package repositories (apt/yum mirrors)
+# 4. Transfer this playbook and inventory to the air-gapped network
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/airgap-offline-installation.yml
+#
+# Requirements:
+#   - Local mirror/repository with all packages and binaries
+#   - Local container registry with pre-pulled images
+#   - Target nodes with no internet access
+
+- name: Deploy Kubernetes in air-gapped environment
+  hosts: k8s_nodes
+  become: yes
+
+  vars:
+    # Kubernetes version
+    kubernetes_version: "1.28.0"
+
+    # Disable network connectivity checks (no internet access)
+    k8s_check_network_connectivity: false
+    k8s_required_endpoints: []
+
+    # Container runtime
+    k8s_container_runtime: containerd
+    k8s_manage_container_runtime: true
+    container_runtime_version: "1.7.2"
+
+    # IMPORTANT: Use binary installation (not source) in air-gapped environments
+    containerd_build_method: binary
+    k8s_install_from_source: false
+
+    # Local container registry configuration
+    # Replace with your local registry address
+    local_registry: "registry.internal.company.com:5000"
+
+    # Registry configuration - point to local registry only
+    container_registries:
+      - "{{ local_registry }}"
+
+    # Mark local registry as insecure if not using TLS
+    # Remove this if your local registry uses valid TLS certificates
+    container_insecure_registries:
+      - "{{ local_registry }}"
+
+    # Registry mirrors (optional - for caching)
+    # container_registry_mirrors:
+    #   - "http://{{ local_registry }}"
+
+    # CNI plugin
+    k8s_cni_plugin: calico
+
+    # Cluster configuration
+    k8s_cluster_name: airgap-cluster
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+
+    # Storage configuration
+    container_storage_path: /var/lib/containerd
+
+  pre_tasks:
+    - name: Display air-gap deployment information
+      debug:
+        msg:
+          - "=========================================="
+          - "Air-Gapped Kubernetes Deployment"
+          - "=========================================="
+          - "This deployment assumes:"
+          - "1. Local package repository is configured"
+          - "2. Local container registry is available: {{ local_registry }}"
+          - "3. All required binaries are pre-staged"
+          - "4. All container images are in local registry"
+          - ""
+          - "Network connectivity checks are DISABLED"
+          - ""
+
+    # Verify local registry is accessible
+    - name: Test connectivity to local registry
+      uri:
+        url: "http://{{ local_registry }}/v2/"
+        method: GET
+        status_code: [200, 401]
+        validate_certs: no
+        timeout: 5
+      register: registry_check
+      failed_when: false
+      changed_when: false
+
+    - name: Verify local registry is accessible
+      assert:
+        that:
+          - registry_check.status in [200, 401]
+        fail_msg: |
+          Cannot reach local registry at {{ local_registry }}
+          Please ensure:
+          1. Local registry is running
+          2. Network connectivity to registry
+          3. Correct registry address in variables
+        success_msg: "Local registry {{ local_registry }} is accessible"
+      when: registry_check.status is defined
+
+    # Verify local package repository is configured
+    - name: Check if local package repository is configured (Debian/Ubuntu)
+      stat:
+        path: /etc/apt/sources.list.d/local-mirror.list
+      register: apt_local_repo
+      when: ansible_os_family == "Debian"
+
+    - name: Check if local package repository is configured (RHEL/CentOS)
+      stat:
+        path: /etc/yum.repos.d/local-mirror.repo
+      register: yum_local_repo
+      when: ansible_os_family == "RedHat"
+
+    - name: Display package repository warning
+      debug:
+        msg:
+          - "WARNING: Local package repository may not be configured"
+          - "Ensure you have set up local mirrors for:"
+          - "  - Debian/Ubuntu: /etc/apt/sources.list.d/local-mirror.list"
+          - "  - RHEL/CentOS: /etc/yum.repos.d/local-mirror.repo"
+      when:
+        - (ansible_os_family == "Debian" and not apt_local_repo.stat.exists) or
+          (ansible_os_family == "RedHat" and not yum_local_repo.stat.exists)
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.runtime
+    - alancaldelas.kubernetes_baremetal.k8s
+
+  post_tasks:
+    - name: Wait for cluster initialization
+      command: kubectl get nodes
+      register: nodes_status
+      until: "'NotReady' in nodes_status.stdout or 'Ready' in nodes_status.stdout"
+      retries: 30
+      delay: 10
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Get node status
+      command: kubectl get nodes -o wide
+      register: nodes_output
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display node status
+      debug:
+        var: nodes_output.stdout_lines
+
+    - name: Check system pods
+      command: kubectl get pods -n kube-system -o wide
+      register: system_pods
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display system pods
+      debug:
+        var: system_pods.stdout_lines
+
+    - name: Display air-gap deployment summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Air-Gapped Deployment Complete"
+          - "=========================================="
+          - "Cluster Name: {{ k8s_cluster_name }}"
+          - "Kubernetes Version: {{ kubernetes_version }}"
+          - "Container Runtime: {{ k8s_container_runtime }}"
+          - "Local Registry: {{ local_registry }}"
+          - ""
+          - "Important Notes:"
+          - "1. All container images must be in {{ local_registry }}"
+          - "2. To pull images, use: {{ local_registry }}/image:tag"
+          - "3. Update deployment YAMLs to use local registry"
+          - ""
+          - "Example image pull from local registry:"
+          - "  kubectl run test --image={{ local_registry }}/nginx:latest"
+          - ""
+          - "To push images to local registry:"
+          - "  docker tag nginx:latest {{ local_registry }}/nginx:latest"
+          - "  docker push {{ local_registry }}/nginx:latest"
+
+# Pre-staging Checklist for Air-Gapped Deployment:
+# =================================================
+#
+# 1. Container Images to Pre-Pull:
+#    - registry.k8s.io/kube-apiserver:v1.28.0
+#    - registry.k8s.io/kube-controller-manager:v1.28.0
+#    - registry.k8s.io/kube-scheduler:v1.28.0
+#    - registry.k8s.io/kube-proxy:v1.28.0
+#    - registry.k8s.io/pause:3.9
+#    - registry.k8s.io/etcd:3.5.9-0
+#    - registry.k8s.io/coredns/coredns:v1.10.1
+#    - Calico/Flannel/Weave/Cilium images (depending on CNI)
+#
+# 2. Binaries to Pre-Stage:
+#    - containerd-1.7.2-linux-amd64.tar.gz
+#    - runc.amd64
+#    - cni-plugins-linux-amd64-v1.3.0.tgz
+#    - kubectl, kubeadm, kubelet binaries
+#
+# 3. Set Up Local Registry:
+#    # Example: Run a simple registry
+#    docker run -d -p 5000:5000 --restart=always --name registry \
+#      -v /mnt/registry:/var/lib/registry registry:2
+#
+# 4. Configure Local Package Mirror:
+#    - For Debian/Ubuntu: apt-mirror or debmirror
+#    - For RHEL/CentOS: reposync or pulp
+#
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# airgap-node1 ansible_host=10.0.1.101 ansible_user=admin
+# airgap-node2 ansible_host=10.0.1.102 ansible_user=admin
+#
+# [k8s_nodes:vars]
+# ansible_become=yes
+# local_registry=registry.internal.company.com:5000

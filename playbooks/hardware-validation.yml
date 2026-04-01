@@ -1,0 +1,205 @@
+---
+# Hardware Validation Playbook
+#
+# This playbook validates that bare-metal servers meet the hardware requirements
+# for Kubernetes deployment. Run this before installing Kubernetes to ensure
+# your hardware is suitable.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/hardware-validation.yml
+#
+# Requirements:
+#   - Physical bare-metal servers or VMs
+#   - Root or sudo access
+#   - BMC/IPMI access (optional, for BMC validation)
+
+- name: Validate hardware for Kubernetes deployment
+  hosts: k8s_nodes
+  become: yes
+  gather_facts: yes
+
+  vars:
+    # Hardware requirements for development/testing
+    hw_min_cpu_cores: 2
+    hw_min_memory_gb: 4
+    hw_min_disk_size_gb: 50
+
+    # Network requirements
+    hw_required_nics: 1
+    hw_min_nic_speed_mbps: 1000
+
+    # BMC validation (set to false if no BMC/IPMI)
+    hw_validate_bmc: false
+
+    # BMC credentials (use ansible-vault for production)
+    # hw_bmc_user: "admin"
+    # hw_bmc_password: "{{ vault_bmc_password }}"
+
+  pre_tasks:
+    - name: Display validation parameters
+      debug:
+        msg:
+          - "=========================================="
+          - "Hardware Validation"
+          - "=========================================="
+          - "Minimum CPU cores: {{ hw_min_cpu_cores }}"
+          - "Minimum RAM: {{ hw_min_memory_gb }}GB"
+          - "Minimum disk: {{ hw_min_disk_size_gb }}GB"
+          - "Required NICs: {{ hw_required_nics }}"
+          - "Minimum NIC speed: {{ hw_min_nic_speed_mbps }}Mbps"
+          - "BMC validation: {{ hw_validate_bmc }}"
+          - ""
+
+    - name: Gather hardware facts
+      setup:
+        gather_subset:
+          - hardware
+          - network
+
+  tasks:
+    - name: Validate CPU cores
+      assert:
+        that:
+          - ansible_processor_vcpus >= hw_min_cpu_cores
+        fail_msg: "Insufficient CPU cores: {{ ansible_processor_vcpus }} < {{ hw_min_cpu_cores }}"
+        success_msg: "CPU cores sufficient: {{ ansible_processor_vcpus }} cores"
+
+    - name: Validate memory
+      assert:
+        that:
+          - (ansible_memtotal_mb / 1024) | round(1) >= hw_min_memory_gb
+        fail_msg: "Insufficient RAM: {{ (ansible_memtotal_mb / 1024) | round(1) }}GB < {{ hw_min_memory_gb }}GB"
+        success_msg: "RAM sufficient: {{ (ansible_memtotal_mb / 1024) | round(1) }}GB"
+
+    - name: Check available disk space
+      shell: df -BG / | tail -1 | awk '{print $4}' | sed 's/G//'
+      register: root_disk_space
+      changed_when: false
+
+    - name: Validate disk space
+      assert:
+        that:
+          - root_disk_space.stdout | int >= hw_min_disk_size_gb
+        fail_msg: "Insufficient disk space: {{ root_disk_space.stdout }}GB < {{ hw_min_disk_size_gb }}GB"
+        success_msg: "Disk space sufficient: {{ root_disk_space.stdout }}GB available"
+
+    - name: Get network interface count
+      set_fact:
+        nic_count: "{{ ansible_interfaces | reject('match', '^lo$') | list | length }}"
+
+    - name: Validate network interfaces
+      assert:
+        that:
+          - nic_count | int >= hw_required_nics
+        fail_msg: "Insufficient NICs: {{ nic_count }} < {{ hw_required_nics }}"
+        success_msg: "Network interfaces sufficient: {{ nic_count }}"
+
+    - name: Check kernel version
+      shell: uname -r
+      register: kernel_version
+      changed_when: false
+
+    - name: Display kernel version
+      debug:
+        msg: "Kernel version: {{ kernel_version.stdout }}"
+
+    - name: Validate kernel version is 4.15+
+      assert:
+        that:
+          - kernel_version.stdout is version('4.15', '>=')
+        fail_msg: "Kernel version too old: {{ kernel_version.stdout }} (minimum: 4.15)"
+        success_msg: "Kernel version acceptable: {{ kernel_version.stdout }}"
+      when: kernel_version.stdout is version_compare('1.0', '>=')
+
+  roles:
+    - role: alancaldelas.kubernetes_baremetal.hardware_validation
+      when: hw_validate_bmc
+
+  post_tasks:
+    - name: Generate hardware report
+      debug:
+        msg:
+          - "=========================================="
+          - "Hardware Validation Report"
+          - "=========================================="
+          - "Hostname: {{ ansible_hostname }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Kernel: {{ kernel_version.stdout }}"
+          - "Architecture: {{ ansible_architecture }}"
+          - ""
+          - "CPU:"
+          - "  Processors: {{ ansible_processor_vcpus }} cores"
+          - "  Model: {{ ansible_processor[2] | default('Unknown') }}"
+          - ""
+          - "Memory:"
+          - "  Total: {{ (ansible_memtotal_mb / 1024) | round(1) }}GB"
+          - "  Free: {{ (ansible_memfree_mb / 1024) | round(1) }}GB"
+          - ""
+          - "Disk:"
+          - "  Root partition free: {{ root_disk_space.stdout }}GB"
+          - ""
+          - "Network:"
+          - "  Interfaces: {{ nic_count }}"
+          - "  Primary IP: {{ ansible_default_ipv4.address }}"
+          - ""
+          - "Result: PASSED - Hardware meets requirements"
+
+    - name: Save hardware report to file
+      copy:
+        content: |
+          Hardware Validation Report
+          ==========================
+          Generated: {{ ansible_date_time.iso8601 }}
+
+          System Information:
+          - Hostname: {{ ansible_hostname }}
+          - FQDN: {{ ansible_fqdn }}
+          - OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          - Kernel: {{ kernel_version.stdout }}
+          - Architecture: {{ ansible_architecture }}
+
+          CPU:
+          - Cores: {{ ansible_processor_vcpus }}
+          - Model: {{ ansible_processor[2] | default('Unknown') }}
+
+          Memory:
+          - Total: {{ (ansible_memtotal_mb / 1024) | round(1) }}GB
+          - Free: {{ (ansible_memfree_mb / 1024) | round(1) }}GB
+
+          Storage:
+          - Root partition free: {{ root_disk_space.stdout }}GB
+
+          Network:
+          - Interface count: {{ nic_count }}
+          - Primary IP: {{ ansible_default_ipv4.address }}
+          - Default gateway: {{ ansible_default_ipv4.gateway | default('N/A') }}
+
+          Validation Results:
+          - CPU: {{ 'PASS' if ansible_processor_vcpus >= hw_min_cpu_cores else 'FAIL' }}
+          - Memory: {{ 'PASS' if (ansible_memtotal_mb / 1024) >= hw_min_memory_gb else 'FAIL' }}
+          - Disk: {{ 'PASS' if root_disk_space.stdout | int >= hw_min_disk_size_gb else 'FAIL' }}
+          - NICs: {{ 'PASS' if nic_count | int >= hw_required_nics else 'FAIL' }}
+
+          Overall: PASSED
+        dest: "/tmp/hardware-validation-{{ ansible_hostname }}-{{ ansible_date_time.epoch }}.txt"
+      delegate_to: localhost
+      become: no
+
+    - name: Display report location
+      debug:
+        msg: "Hardware validation report saved to /tmp/hardware-validation-{{ ansible_hostname }}-{{ ansible_date_time.epoch }}.txt"
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# server1 ansible_host=192.168.1.101 ansible_user=ubuntu
+# server2 ansible_host=192.168.1.102 ansible_user=ubuntu
+# server3 ansible_host=192.168.1.103 ansible_user=centos
+#
+# [k8s_nodes:vars]
+# ansible_become=yes
+#
+# For production hardware validation, increase requirements:
+# hw_min_cpu_cores=8
+# hw_min_memory_gb=16
+# hw_min_disk_size_gb=200

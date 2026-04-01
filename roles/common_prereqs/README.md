@@ -1,38 +1,82 @@
-Role Name
-=========
+# Common Prerequisites Role
 
-A brief description of the role goes here.
+This Ansible role provides common system prerequisites and configuration tasks shared across the kubernetes_baremetal collection. It handles foundational system setup that other roles depend on.
 
-Requirements
-------------
+## Purpose
 
-Any pre-requisites that may not be covered by Ansible itself or the role should be mentioned here. For instance, if the role uses the EC2 module, it may be a good idea to mention in this section that the boto package is required.
+The `common_prereqs` role is designed to be included by other roles to ensure common system requirements are met before deploying container runtimes or Kubernetes components.
 
-Role Variables
---------------
+## Features
 
-A description of the settable variables for this role should go here, including any variables that are in defaults/main.yml, vars/main.yml, and any variables that can/should be set via parameters to the role. Any variables that are read from other roles and/or the global scope (ie. hostvars, group vars, etc.) should be mentioned here as well.
+- Common package installation across distributions
+- Basic system configuration
+- Network prerequisites
+- Shared utility tasks
 
-Dependencies
-------------
+## Requirements
 
-A list of other roles hosted on Galaxy should go here, plus any details in regards to parameters that may need to be set for other roles, or variables that are used from other roles.
+- Ansible 2.9+
+- Target systems: Linux (Debian/Ubuntu, RHEL/CentOS/Fedora)
+- Root or sudo access
 
-Example Playbook
-----------------
+## Role Variables
 
-Including an example of how to use your role (for instance, with variables passed in as parameters) is always nice for users too:
+This role currently inherits variables from the calling role and does not define its own default variables.
 
-    - hosts: servers
-      roles:
-         - { role: username.rolename, x: 42 }
+## Dependencies
 
-License
--------
+None - this is a foundational role.
 
-BSD
+## Example Usage
 
-Author Information
-------------------
+### Include in Another Role
 
-An optional section for the role authors to include contact information, or a website (HTML is not allowed).
+```yaml
+---
+# In another role's tasks/main.yml
+- name: Setup common prerequisites
+  include_role:
+    name: alancaldelas.kubernetes_baremetal.common_prereqs
+```
+
+### Standalone Playbook
+
+```yaml
+---
+- name: Setup common system prerequisites
+  hosts: all
+  become: yes
+  roles:
+    - alancaldelas.kubernetes_baremetal.common_prereqs
+```
+
+## Architecture
+
+### File Structure
+```
+common_prereqs/
+├── defaults/main.yml    # Default variables (currently empty)
+├── tasks/
+│   └── main.yml        # Main task file
+├── vars/main.yml       # Internal variables
+└── handlers/main.yml   # Event handlers
+```
+
+## Future Enhancements
+
+This role is designed to be extended with common tasks such as:
+- Time synchronization setup (chrony/ntp)
+- DNS configuration validation
+- Common logging setup
+- Security hardening tasks
+- System update management
+
+## License
+
+MIT-0
+
+## Author Information
+
+Part of the kubernetes_baremetal collection.
+
+Created by Alan Caldelas (ajcaldelas@gmail.com)

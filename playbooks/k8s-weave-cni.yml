@@ -1,0 +1,91 @@
+---
+# Kubernetes Installation with Weave Net CNI
+#
+# This playbook deploys Kubernetes with Weave Net CNI plugin.
+# Weave Net provides a resilient and simple-to-setup network for Kubernetes.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/k8s-weave-cni.yml
+#
+# Requirements:
+#   - Target node with minimum 2 CPU cores, 2GB RAM, 20GB disk
+#   - Internet connectivity to download Weave manifests
+
+- name: Deploy Kubernetes with Weave Net CNI
+  hosts: k8s_nodes
+  become: yes
+
+  vars:
+    # Kubernetes configuration
+    kubernetes_version: "1.28.0"
+
+    # Container runtime
+    k8s_container_runtime: containerd
+    k8s_manage_container_runtime: true
+
+    # Weave CNI configuration
+    k8s_cni_plugin: weave
+
+    # Cluster configuration
+    k8s_cluster_name: weave-cluster
+
+    # Weave default pod CIDR is 10.32.0.0/12
+    # Can be customized by setting IPALLOC_RANGE in Weave DaemonSet
+    k8s_pod_subnet: "10.32.0.0/12"
+    k8s_service_subnet: "10.96.0.0/12"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+  post_tasks:
+    - name: Wait for Weave Net pods to be ready
+      shell: |
+        kubectl get pods -n kube-system -l name=weave-net -o json | \
+        jq -r '.items[].status.phase' | grep -v Running
+      register: weave_status
+      until: weave_status.stdout_lines | length == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Get Weave Net status
+      command: kubectl get pods -n kube-system -l name=weave-net -o wide
+      register: weave_pods
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display Weave Net status
+      debug:
+        var: weave_pods.stdout_lines
+
+    - name: Display Weave configuration notes
+      debug:
+        msg:
+          - "Weave Net CNI has been deployed!"
+          - ""
+          - "Weave Net Features:"
+          - "- Automatic mesh networking"
+          - "- Network policy support"
+          - "- Encryption support (optional)"
+          - "- Simple installation"
+          - "- Multi-cloud support"
+          - ""
+          - "Pod network CIDR: {{ k8s_pod_subnet }}"
+          - ""
+          - "To enable encryption, set WEAVE_PASSWORD:"
+          - "  kubectl set env ds/weave-net -n kube-system WEAVE_PASSWORD=yourpassword"
+          - ""
+          - "Weave Net documentation:"
+          - "  https://www.weave.works/docs/net/latest/kubernetes/"
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# k8s-weave ansible_host=192.168.1.100 ansible_user=ubuntu
+#
+# [k8s_nodes:vars]
+# ansible_become=yes

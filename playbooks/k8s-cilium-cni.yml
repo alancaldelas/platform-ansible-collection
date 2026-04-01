@@ -1,0 +1,100 @@
+---
+# Kubernetes Installation with Cilium CNI
+#
+# This playbook deploys Kubernetes with Cilium CNI plugin.
+# Cilium uses eBPF for high-performance networking and advanced security features.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/k8s-cilium-cni.yml
+#
+# Requirements:
+#   - Target node with minimum 2 CPU cores, 4GB RAM, 20GB disk
+#   - Kernel 4.9+ (5.10+ recommended for all features)
+#   - Internet connectivity to download Cilium
+
+- name: Deploy Kubernetes with Cilium CNI
+  hosts: k8s_nodes
+  become: yes
+
+  vars:
+    # Kubernetes configuration
+    kubernetes_version: "1.28.0"
+
+    # Container runtime
+    k8s_container_runtime: containerd
+    k8s_manage_container_runtime: true
+
+    # Cilium CNI configuration
+    k8s_cni_plugin: cilium
+
+    # Cluster configuration
+    k8s_cluster_name: cilium-cluster
+
+    # Cilium default pod CIDR is 10.0.0.0/8
+    k8s_pod_subnet: "10.0.0.0/8"
+    k8s_service_subnet: "10.96.0.0/12"
+
+    # Higher kernel version required for Cilium features
+    k8s_min_kernel_version: "4.19"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+  post_tasks:
+    - name: Wait for Cilium pods to be ready
+      shell: |
+        kubectl get pods -n kube-system -l k8s-app=cilium -o json | \
+        jq -r '.items[].status.phase' | grep -v Running
+      register: cilium_status
+      until: cilium_status.stdout_lines | length == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Get Cilium status
+      command: kubectl get pods -n kube-system -l k8s-app=cilium -o wide
+      register: cilium_pods
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display Cilium status
+      debug:
+        var: cilium_pods.stdout_lines
+
+    - name: Display Cilium configuration notes
+      debug:
+        msg:
+          - "Cilium CNI has been deployed!"
+          - ""
+          - "Cilium Features:"
+          - "- eBPF-based networking and security"
+          - "- Advanced network policy (L3-L7)"
+          - "- Service mesh capabilities"
+          - "- Transparent encryption"
+          - "- Hubble observability platform"
+          - "- High performance"
+          - ""
+          - "Pod network CIDR: {{ k8s_pod_subnet }}"
+          - ""
+          - "To install Cilium CLI for management:"
+          - "  curl -L --remote-name-all https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz"
+          - "  sudo tar xzvfC cilium-linux-amd64.tar.gz /usr/local/bin"
+          - ""
+          - "Check Cilium status with:"
+          - "  cilium status"
+          - "  cilium connectivity test"
+          - ""
+          - "Enable Hubble UI for observability:"
+          - "  cilium hubble enable --ui"
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# k8s-cilium ansible_host=192.168.1.100 ansible_user=ubuntu
+#
+# [k8s_nodes:vars]
+# ansible_become=yes

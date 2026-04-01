@@ -1,0 +1,87 @@
+---
+# Kubernetes Installation with Flannel CNI
+#
+# This playbook deploys Kubernetes with Flannel CNI plugin.
+# Flannel is a simple and easy-to-configure overlay network for Kubernetes.
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/k8s-flannel-cni.yml
+#
+# Requirements:
+#   - Target node with minimum 2 CPU cores, 2GB RAM, 20GB disk
+#   - Internet connectivity to download Flannel manifests
+
+- name: Deploy Kubernetes with Flannel CNI
+  hosts: k8s_nodes
+  become: yes
+
+  vars:
+    # Kubernetes configuration
+    kubernetes_version: "1.28.0"
+
+    # Container runtime
+    k8s_container_runtime: containerd
+    k8s_manage_container_runtime: true
+
+    # Flannel CNI configuration
+    k8s_cni_plugin: flannel
+
+    # Cluster configuration
+    k8s_cluster_name: flannel-cluster
+
+    # IMPORTANT: Flannel default pod CIDR is 10.244.0.0/16
+    # This must match the network defined in Flannel's configuration
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+  post_tasks:
+    - name: Wait for Flannel pods to be ready
+      shell: |
+        kubectl get pods -n kube-system -l app=flannel -o json | \
+        jq -r '.items[].status.phase' | grep -v Running
+      register: flannel_status
+      until: flannel_status.stdout_lines | length == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Get Flannel status
+      command: kubectl get pods -n kube-system -l app=flannel -o wide
+      register: flannel_pods
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display Flannel status
+      debug:
+        var: flannel_pods.stdout_lines
+
+    - name: Display Flannel configuration notes
+      debug:
+        msg:
+          - "Flannel CNI has been deployed!"
+          - ""
+          - "Flannel Features:"
+          - "- Simple overlay network"
+          - "- VXLAN backend (default)"
+          - "- Easy to configure and troubleshoot"
+          - "- Good for small to medium clusters"
+          - ""
+          - "Pod network CIDR: {{ k8s_pod_subnet }}"
+          - ""
+          - "Note: Flannel does not support network policies"
+          - "For network policy support, consider using Calico or Cilium"
+
+# Example inventory file (save as inventory.ini):
+# ===============================================
+# [k8s_nodes]
+# k8s-flannel ansible_host=192.168.1.100 ansible_user=ubuntu
+#
+# [k8s_nodes:vars]
+# ansible_become=yes
