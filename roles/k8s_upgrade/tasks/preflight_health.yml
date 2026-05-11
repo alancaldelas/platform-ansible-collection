@@ -1,0 +1,172 @@
+# SPDX-License-Identifier: MIT-0
+---
+# Cluster health pre-flight checks (all read-only).
+#
+# Checks:
+#   1. etcd endpoint is healthy (via etcdctl in pod or on host)
+#   2. All nodes are in Ready state
+#   3. No pods stuck in Failed/Unknown state (warns, does not block)
+#   4. Certificate expiry (warns if < k8s_upgrade_cert_warn_days, blocks if expired)
+#   5. Sufficient disk space on the snapshot target directory
+
+# ---------------------------------------------------------------------------
+# 1. etcd health
+# ---------------------------------------------------------------------------
+
+- name: "preflight_health | etcd | get etcd pod name"
+  command: >
+    kubectl get pod -n kube-system -l component=etcd
+    -o jsonpath='{.items[0].metadata.name}'
+  register: _etcd_pod_name
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: k8s_upgrade_etcdctl_method == "pod"
+
+- name: "preflight_health | etcd | check health via pod exec"
+  command: >
+    kubectl exec -n kube-system {{ _etcd_pod_name.stdout }}
+    -- etcdctl endpoint health
+    --cacert={{ k8s_upgrade_etcd_cacert }}
+    --cert={{ k8s_upgrade_etcd_cert }}
+    --key={{ k8s_upgrade_etcd_key }}
+    --endpoints={{ k8s_upgrade_etcd_endpoints }}
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+    ETCDCTL_API: "3"
+  register: _etcd_health
+  changed_when: false
+  failed_when: _etcd_health.rc != 0
+  when: k8s_upgrade_etcdctl_method == "pod"
+
+- name: "preflight_health | etcd | check health via host etcdctl"
+  command: >
+    etcdctl endpoint health
+    --cacert={{ k8s_upgrade_etcd_cacert }}
+    --cert={{ k8s_upgrade_etcd_cert }}
+    --key={{ k8s_upgrade_etcd_key }}
+    --endpoints={{ k8s_upgrade_etcd_endpoints }}
+  environment:
+    ETCDCTL_API: "3"
+  register: _etcd_health_host
+  changed_when: false
+  failed_when: _etcd_health_host.rc != 0
+  when: k8s_upgrade_etcdctl_method == "host"
+
+# ---------------------------------------------------------------------------
+# 2. Node readiness
+# ---------------------------------------------------------------------------
+
+- name: "preflight_health | nodes | get not-Ready node names via jsonpath"
+  command: >
+    kubectl get nodes
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+  register: _node_ready_lines
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "preflight_health | nodes | identify not-Ready nodes"
+  set_fact:
+    _not_ready_nodes: >-
+      {{
+        _node_ready_lines.stdout_lines
+        | map('split', ' ')
+        | selectattr(1, 'ne', 'True')
+        | map(attribute=0)
+        | list
+      }}
+
+- name: "preflight_health | nodes | assert all nodes are Ready"
+  assert:
+    that: _not_ready_nodes | length == 0
+    fail_msg: >
+      One or more nodes are not Ready. Resolve all node issues before upgrading.
+      Not-ready nodes: {{ _not_ready_nodes | join(', ') }}
+
+# ---------------------------------------------------------------------------
+# 3. Pod state check (warn only - pre-existing issues should not block upgrade
+#    unless the operator decides otherwise)
+# ---------------------------------------------------------------------------
+
+- name: "preflight_health | pods | find Failed or Unknown pods"
+  command: >
+    kubectl get pods --all-namespaces
+    --field-selector=status.phase=Failed
+    --output=jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'
+  register: _failed_pods
+  changed_when: false
+  failed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "preflight_health | pods | warn on failed pods"
+  debug:
+    msg: >
+      WARNING: The following pods are in Failed state and may indicate existing
+      cluster issues. Investigate before proceeding:
+      {{ _failed_pods.stdout_lines }}
+  when: _failed_pods.stdout | length > 0
+
+# ---------------------------------------------------------------------------
+# 4. Certificate expiry
+# ---------------------------------------------------------------------------
+
+- name: "preflight_health | certs | run kubeadm certs check-expiration"
+  command: kubeadm certs check-expiration
+  register: _cert_check
+  changed_when: false
+  failed_when: false
+
+- name: "preflight_health | certs | block on expired certificates"
+  assert:
+    that: "'EXPIRED' not in _cert_check.stdout"
+    fail_msg: >
+      One or more Kubernetes certificates are EXPIRED. Renew them with
+      'kubeadm certs renew all' before attempting an upgrade.
+
+- name: "preflight_health | certs | warn on certificates expiring soon"
+  debug:
+    msg: >
+      WARNING: One or more certificates are expiring within {{ k8s_upgrade_cert_warn_days }} days.
+      Consider renewing with 'kubeadm certs renew all' before or after the upgrade.
+      kubeadm output:
+      {{ _cert_check.stdout }}
+  when: >
+    'MISSING' in _cert_check.stdout or
+    (_cert_check.rc != 0 and 'EXPIRED' not in _cert_check.stdout)
+
+# ---------------------------------------------------------------------------
+# 5. Disk space for snapshot
+# ---------------------------------------------------------------------------
+
+- name: "preflight_health | disk | ensure snapshot directory exists"
+  file:
+    path: "{{ k8s_upgrade_snapshot_dir }}"
+    state: directory
+    mode: '0700'
+  become: true
+
+- name: "preflight_health | disk | get available space on snapshot volume"
+  command: df --output=avail -k {{ k8s_upgrade_snapshot_dir }}
+  register: _disk_avail
+  changed_when: false
+
+- name: "preflight_health | disk | get etcd data directory size"
+  command: du -sk /var/lib/etcd
+  register: _etcd_size
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: "preflight_health | disk | assert sufficient space for snapshot (2x etcd size)"
+  assert:
+    that: >
+      (_disk_avail.stdout_lines | last | trim | int) >
+      ((_etcd_size.stdout_lines | first | split('\t') | first | int) * 2)
+    fail_msg: >
+      Insufficient disk space for etcd snapshot at {{ k8s_upgrade_snapshot_dir }}.
+      Available: {{ _disk_avail.stdout_lines | last | trim }}K,
+      etcd data size: {{ _etcd_size.stdout_lines | first | split('\t') | first }}K
+      (need 2x headroom for snapshot + PKI archive).
+  when: _etcd_size.rc == 0

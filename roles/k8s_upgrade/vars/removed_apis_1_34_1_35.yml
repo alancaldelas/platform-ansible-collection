@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT-0
+---
+# Removed API versions for the Kubernetes 1.34 -> 1.35 upgrade hop.
+#
+# IMPORTANT: Verify this list against the official release notes before use:
+#   https://kubernetes.io/docs/reference/using-api/deprecation-guide/
+#   https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.35.md
+#
+# Format:
+#   group:       API group (e.g. flowcontrol.apiserver.k8s.io)
+#   versions:    list of removed API versions
+#   replacement: the stable version operators should migrate to
+#   resources:   resource types in this group
+#
+# When k8s_upgrade_use_pluto: false, preflight_apis.yml queries each combination
+# of group/versions[0]/resources[0] via kubectl --raw. Add additional entries
+# for each distinct API group that is removed in this version.
+#
+# When k8s_upgrade_use_pluto: true this file is still loaded but the list is
+# not used for querying - Pluto handles detection automatically.
+
+k8s_removed_apis: []
+# Add removed API groups for this version hop below once the 1.35 changelog
+# is published. Template:
+# k8s_removed_apis:
+#   - group: "example.k8s.io"
+#     versions:
+#       - "v1beta1"
+#     replacement: "v1"
+#     resources:
+#       - "someresource"

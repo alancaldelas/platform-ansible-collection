@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: MIT-0
+---
+# Removed kube-apiserver flags and graduated feature gates for the 1.33 -> 1.34 hop.
+#
+# IMPORTANT: Verify this list against the official release notes before use:
+#   https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/
+#   https://github.com/kubernetes/kubernetes/blob/master/CHANGELOG/CHANGELOG-1.34.md
+#   https://kubernetes.io/docs/reference/command-line-tools-reference/feature-gates-removed/
+#
+# ---- k8s_removed_flags ----
+# Flags that are fully removed from the kube-apiserver binary in this version.
+# The apiserver will fail to start if these are present in the static pod manifest.
+#
+# Fields:
+#   flag:        full flag name as it appears in the manifest (e.g. "--some-flag")
+#   removed_in:  Kubernetes version it was removed in
+#   action:      what the operator should do
+#   replacement: replacement flag or configuration (empty string if none)
+
+k8s_removed_flags: []
+# Template:
+# k8s_removed_flags:
+#   - flag: "--some-removed-flag"
+#     removed_in: "1.34"
+#     action: "Remove from kube-apiserver manifest. No replacement."
+#     replacement: ""
+#
+#   - flag: "--old-flag-name"
+#     removed_in: "1.34"
+#     action: "Replace with --new-flag-name"
+#     replacement: "--new-flag-name"
+
+# ---- k8s_graduated_gates ----
+# Feature gates that reached GA status and had their gate entry removed from
+# the binary. Passing these in --feature-gates causes the apiserver to refuse
+# to start with "unrecognized feature gate" error.
+#
+# Fields:
+#   name:         gate name as it appears in --feature-gates (e.g. "SomeFeature=true")
+#   graduated_in: Kubernetes version the gate was removed
+#   default:      the locked-in default now that it has graduated (always true for GA)
+#   note:         guidance for the operator
+
+k8s_graduated_gates: []
+# Template:
+# k8s_graduated_gates:
+#   - name: "SomeFeatureName"
+#     graduated_in: "1.34"
+#     default: "true"
+#     note: >
+#       This feature graduated to GA in 1.33 and its gate was removed in 1.34.
+#       Remove 'SomeFeatureName=true' from --feature-gates in the apiserver manifest.
+#
+#   - name: "AnotherGate"
+#     graduated_in: "1.34"
+#     default: "true"
+#     note: >
+#       Graduated to GA. Remove from --feature-gates.

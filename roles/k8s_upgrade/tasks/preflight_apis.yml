@@ -1,0 +1,160 @@
+# SPDX-License-Identifier: MIT-0
+---
+# Deprecated and removed API version detection (read-only).
+#
+# Two modes controlled by k8s_upgrade_use_pluto:
+#
+#   true  - Pluto (https://github.com/FairwindsOps/pluto) is downloaded to the
+#           control plane and run against the live cluster. Pluto is the most
+#           thorough method as it checks all resource types automatically.
+#
+#   false - The hardcoded removal map in
+#           vars/removed_apis_<from>_<to>.yml is loaded and each deprecated
+#           API endpoint is queried directly via kubectl --raw. This method
+#           works in air-gapped environments with no binary download.
+#
+# Both modes fail the play if deprecated resources are found, giving the
+# operator a list of what needs to be migrated before the upgrade proceeds.
+
+# ---------------------------------------------------------------------------
+# Shared: load the hardcoded map regardless of mode.
+# Pluto path ignores it; the map path requires it.
+# This also serves as a sanity check that a vars file exists for this hop.
+# ---------------------------------------------------------------------------
+
+- name: "preflight_apis | load removal map for {{ k8s_upgrade_from }} -> {{ k8s_upgrade_to }}"
+  include_vars: "removed_apis_{{ k8s_upgrade_from | replace('.', '_') }}_{{ k8s_upgrade_to | replace('.', '_') }}.yml"
+
+# ---------------------------------------------------------------------------
+# Pluto path
+# ---------------------------------------------------------------------------
+
+- name: "preflight_apis | pluto | check if binary is already present"
+  stat:
+    path: "{{ k8s_upgrade_pluto_install_dir }}/pluto"
+  register: _pluto_stat
+  when: k8s_upgrade_use_pluto
+
+- name: "preflight_apis | pluto | check installed version"
+  command: "{{ k8s_upgrade_pluto_install_dir }}/pluto version --output=json"
+  register: _pluto_current_version
+  changed_when: false
+  failed_when: false
+  when:
+    - k8s_upgrade_use_pluto
+    - _pluto_stat.stat.exists
+
+- name: "preflight_apis | pluto | determine if install or upgrade is needed"
+  set_fact:
+    _pluto_needs_install: >-
+      {{
+        not _pluto_stat.stat.exists or
+        (
+          _pluto_current_version.rc == 0 and
+          k8s_upgrade_pluto_version not in (_pluto_current_version.stdout | default(''))
+        )
+      }}
+  when: k8s_upgrade_use_pluto
+
+- name: "preflight_apis | pluto | download and install v{{ k8s_upgrade_pluto_version }}"
+  block:
+    - name: "preflight_apis | pluto | download archive"
+      get_url:
+        url: "https://github.com/FairwindsOps/pluto/releases/download/v{{ k8s_upgrade_pluto_version }}/pluto_{{ k8s_upgrade_pluto_version }}_linux_{{ k8s_upgrade_arch }}.tar.gz"
+        dest: "/tmp/pluto_{{ k8s_upgrade_pluto_version }}.tar.gz"
+        mode: '0644'
+      become: true
+
+    - name: "preflight_apis | pluto | extract binary"
+      unarchive:
+        src: "/tmp/pluto_{{ k8s_upgrade_pluto_version }}.tar.gz"
+        dest: "{{ k8s_upgrade_pluto_install_dir }}"
+        remote_src: true
+        include:
+          - pluto
+      become: true
+
+    - name: "preflight_apis | pluto | set executable bit"
+      file:
+        path: "{{ k8s_upgrade_pluto_install_dir }}/pluto"
+        mode: '0755'
+      become: true
+
+    - name: "preflight_apis | pluto | clean up archive"
+      file:
+        path: "/tmp/pluto_{{ k8s_upgrade_pluto_version }}.tar.gz"
+        state: absent
+      become: true
+  when:
+    - k8s_upgrade_use_pluto
+    - _pluto_needs_install | default(true)
+
+- name: "preflight_apis | pluto | detect deprecated APIs against target v{{ k8s_upgrade_to }}"
+  command: >
+    {{ k8s_upgrade_pluto_install_dir }}/pluto detect-all-in-cluster
+    --target-versions k8s=v{{ k8s_upgrade_to }}.0
+    --output=json
+  register: _pluto_output
+  changed_when: false
+  failed_when: _pluto_output.rc not in [0, 3]
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: k8s_upgrade_use_pluto
+
+- name: "preflight_apis | pluto | parse results"
+  set_fact:
+    _pluto_results: "{{ _pluto_output.stdout | from_json }}"
+  when:
+    - k8s_upgrade_use_pluto
+    - _pluto_output.stdout | length > 0
+
+- name: "preflight_apis | pluto | fail if deprecated or removed APIs found"
+  assert:
+    that: _pluto_output.rc == 0
+    fail_msg: |
+      Pluto detected resources using deprecated or removed APIs that will break
+      on Kubernetes v{{ k8s_upgrade_to }}. Migrate these before upgrading.
+
+      Run 'pluto detect-all-in-cluster --target-versions k8s=v{{ k8s_upgrade_to }}.0'
+      on the cluster for the full report:
+      {{ _pluto_output.stdout }}
+  when: k8s_upgrade_use_pluto
+
+# ---------------------------------------------------------------------------
+# Hardcoded map path
+# Queries each deprecated API group endpoint directly via kubectl --raw so
+# we confirm whether actual resources exist at that API version.
+# ---------------------------------------------------------------------------
+
+- name: "preflight_apis | map | query each removed API endpoint"
+  command: >
+    kubectl get --raw
+    /apis/{{ item.group }}/{{ item.versions | first }}/{{ item.resources | first }}
+  register: _api_raw_results
+  loop: "{{ k8s_removed_apis | default([]) }}"
+  loop_control:
+    label: "{{ item.group }}/{{ item.versions | first }}"
+  changed_when: false
+  failed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: not k8s_upgrade_use_pluto
+
+- name: "preflight_apis | map | fail if resources exist under removed API versions"
+  assert:
+    that: >
+      (item.stdout | default('{}') | from_json).items | default([]) | length == 0
+    fail_msg: |
+      Resources exist under a API version being removed in v{{ k8s_upgrade_to }}:
+        Group   : {{ k8s_removed_apis[item_index].group }}
+        Versions: {{ k8s_removed_apis[item_index].versions | join(', ') }}
+        Replacement: {{ k8s_removed_apis[item_index].replacement }}
+      Migrate all affected resources before upgrading.
+  loop: "{{ _api_raw_results.results | default([]) }}"
+  loop_control:
+    index_var: item_index
+    label: "{{ k8s_removed_apis[item_index].group }}"
+  when:
+    - not k8s_upgrade_use_pluto
+    - item.rc == 0
+    - item.stdout | length > 0

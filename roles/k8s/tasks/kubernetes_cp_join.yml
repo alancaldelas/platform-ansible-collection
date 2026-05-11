@@ -1,0 +1,240 @@
+# SPDX-License-Identifier: MIT-0
+---
+# Join an additional control plane node to an existing HA cluster.
+#
+# kubeadm stores encrypted copies of the control plane certificates in a
+# kube-system Secret when init runs with --upload-certs. The certificate key
+# that decrypts them expires after 2 hours. This task file re-uploads the
+# certs on the primary master (resetting the TTL) immediately before each
+# join so the key is always fresh, regardless of how long the playbook has
+# been running.
+#
+# Steps:
+#   0. Pre-join assertions (group exists, facts available, HA is enabled)
+#   1. Re-upload certificates on primary master (generates fresh cert key)
+#   2. Generate a short-lived bootstrap token on primary master
+#   3. Retrieve CA cert hash from primary master
+#   4. Resolve the API server endpoint
+#   5. Run kubeadm join --control-plane --certificate-key on this node
+#   6. Set up kubeconfig for root on this node
+#   7. Wait for this node to appear Ready
+#   8. Verify primary master can reach this node's kubelet port (10250)
+
+# ---------------------------------------------------------------------------
+# 0. Pre-join assertions
+# ---------------------------------------------------------------------------
+
+- name: "cp_join | assert k8s_ha_enabled is true"
+  assert:
+    that:
+      - k8s_ha_enabled | default(false)
+    fail_msg: >
+      k8s_node_role is 'control_plane_join' but k8s_ha_enabled is false.
+      Set k8s_ha_enabled: true in both the primary master play and this play.
+
+- name: "cp_join | assert k8s_control_plane_endpoint is set"
+  assert:
+    that:
+      - k8s_control_plane_endpoint | length > 0
+    fail_msg: >
+      k8s_control_plane_endpoint must be set for HA control plane joins.
+      It must point to the load balancer VIP or DNS name in front of all
+      control plane nodes — not to a single master's IP address.
+
+- name: "cp_join | assert k8s_master_group is defined"
+  assert:
+    that:
+      - k8s_master_group | length > 0
+    fail_msg: >
+      k8s_master_group is not set. Set it to the inventory group name that
+      contains the primary control plane node, e.g. k8s_master_group: "k8s_masters".
+
+- name: "cp_join | assert k8s_master_group exists in inventory"
+  assert:
+    that:
+      - k8s_master_group in groups
+    fail_msg: >
+      The inventory group '{{ k8s_master_group }}' does not exist.
+      Check that your inventory defines this group and that k8s_master_group
+      matches it exactly (case-sensitive).
+
+- name: "cp_join | assert k8s_master_group has at least one host"
+  assert:
+    that:
+      - groups[k8s_master_group] | length > 0
+    fail_msg: >
+      The inventory group '{{ k8s_master_group }}' is empty.
+      Add the primary control plane host to this group.
+
+- name: "cp_join | assert primary master facts are available"
+  assert:
+    that:
+      - k8s_control_plane_endpoint | length > 0 or hostvars[groups[k8s_master_group][0]]['ansible_default_ipv4'] is defined
+    fail_msg: >
+      Facts for the primary master '{{ groups[k8s_master_group][0] }}' are not
+      available and k8s_control_plane_endpoint is not set.
+      Either set k8s_control_plane_endpoint (recommended for HA) or ensure
+      gather_facts: true is set on the primary master play so that hostvars
+      is populated before the control plane join play runs.
+
+# ---------------------------------------------------------------------------
+# 1. Re-upload certificates on primary master (resets the 2-hour TTL)
+#    Output ends with the new certificate key on the last line.
+# ---------------------------------------------------------------------------
+
+- name: "cp_join | re-upload certificates on primary master"
+  command: kubeadm init phase upload-certs --upload-certs
+  register: _reupload_output
+  changed_when: true
+  become: true
+  delegate_to: "{{ groups[k8s_master_group][0] }}"
+
+- name: "cp_join | parse certificate key from upload output"
+  set_fact:
+    _cert_key: "{{ _reupload_output.stdout_lines | last | trim }}"
+
+- name: "cp_join | assert certificate key was parsed successfully"
+  assert:
+    that:
+      - _cert_key | length == 64
+    fail_msg: >
+      Failed to parse a 64-character certificate key from kubeadm output.
+      Last line of output was: '{{ _cert_key }}'
+      Full output: {{ _reupload_output.stdout }}
+
+# ---------------------------------------------------------------------------
+# 2. Generate a bootstrap token on the primary master
+# ---------------------------------------------------------------------------
+
+- name: "cp_join | generate bootstrap token on primary master"
+  command: kubeadm token create --ttl {{ k8s_join_token_ttl }}
+  register: _token_raw
+  changed_when: true
+  become: true
+  delegate_to: "{{ groups[k8s_master_group][0] }}"
+
+- name: "cp_join | store bootstrap token"
+  set_fact:
+    _join_token: "{{ _token_raw.stdout | trim }}"
+
+# ---------------------------------------------------------------------------
+# 3. Retrieve CA cert hash from primary master
+# ---------------------------------------------------------------------------
+
+- name: "cp_join | get CA cert hash from primary master"
+  shell: |
+    openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt |
+    openssl rsa -pubin -outform der 2>/dev/null |
+    openssl dgst -sha256 -hex |
+    sed 's/^.* //'
+  register: _ca_hash_raw
+  changed_when: false
+  become: true
+  delegate_to: "{{ groups[k8s_master_group][0] }}"
+
+# ---------------------------------------------------------------------------
+# 4. Resolve the API server endpoint
+# ---------------------------------------------------------------------------
+
+- name: "cp_join | set API server endpoint fact"
+  set_fact:
+    _api_endpoint: "{{ k8s_control_plane_endpoint }}"
+
+# ---------------------------------------------------------------------------
+# 5. Run kubeadm join --control-plane on this node
+# ---------------------------------------------------------------------------
+
+- name: "cp_join | join as additional control plane node"
+  command: >
+    kubeadm join {{ _api_endpoint }}
+    --token {{ _join_token }}
+    --discovery-token-ca-cert-hash sha256:{{ _ca_hash_raw.stdout | trim }}
+    --control-plane
+    --certificate-key {{ _cert_key }}
+    {{ k8s_kubeadm_join_extra_args }}
+  become: true
+  register: _cp_join_output
+  changed_when: true
+
+- name: "cp_join | show join output"
+  debug:
+    var: _cp_join_output.stdout_lines
+
+# ---------------------------------------------------------------------------
+# 6. Set up kubeconfig for root on this control plane node
+# ---------------------------------------------------------------------------
+
+- name: "cp_join | create .kube directory for root"
+  file:
+    path: /root/.kube
+    state: directory
+    mode: '0700'
+  become: true
+
+- name: "cp_join | copy admin.conf to root .kube/config"
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0600'
+  become: true
+
+# ---------------------------------------------------------------------------
+# 7. Wait for this node to appear Ready in the cluster
+# ---------------------------------------------------------------------------
+
+- name: "cp_join | wait for node to become Ready"
+  command: >
+    kubectl get node {{ ansible_hostname }}
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: _cp_ready
+  until: _cp_ready.stdout == "True"
+  retries: 24
+  delay: 10
+  changed_when: false
+  become: true
+  delegate_to: "{{ groups[k8s_master_group][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "cp_join | verify node has control-plane role label"
+  command: >
+    kubectl get node {{ ansible_hostname }}
+    -o jsonpath='{.metadata.labels}'
+  register: _cp_labels
+  changed_when: false
+  become: true
+  delegate_to: "{{ groups[k8s_master_group][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "cp_join | assert control-plane label is present"
+  assert:
+    that:
+      - '"node-role.kubernetes.io/control-plane" in _cp_labels.stdout'
+    fail_msg: >
+      Node {{ ansible_hostname }} joined but does not have the
+      node-role.kubernetes.io/control-plane label. Check kubeadm join output
+      above for errors.
+    success_msg: "Node {{ ansible_hostname }} is a control plane member and is Ready."
+
+# ---------------------------------------------------------------------------
+# 8. Verify primary master can reach this node's kubelet port (10250)
+# ---------------------------------------------------------------------------
+
+- name: "cp_join | verify primary master can reach this node kubelet port (10250)"
+  wait_for:
+    host: "{{ ansible_default_ipv4.address }}"
+    port: 10250
+    timeout: 30
+    state: started
+  delegate_to: "{{ groups[k8s_master_group][0] }}"
+  become: true
+
+- name: "cp_join | confirm kubelet connectivity"
+  debug:
+    msg: >
+      Control plane node {{ ansible_hostname }} successfully joined the HA cluster
+      and is reachable from the primary master on port 10250.

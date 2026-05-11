@@ -1,0 +1,119 @@
+---
+# Kubernetes Multi-Node Cluster Deployment
+#
+# Deploys a single control plane + one or more worker nodes.
+#
+# Inventory layout required:
+#
+#   [k8s_masters]
+#   master01 ansible_host=192.168.1.10 ansible_user=ubuntu
+#
+#   [k8s_workers]
+#   worker01 ansible_host=192.168.1.11 ansible_user=ubuntu
+#   worker02 ansible_host=192.168.1.12 ansible_user=ubuntu
+#
+#   [k8s_cluster:children]
+#   k8s_masters
+#   k8s_workers
+#
+#   [k8s_cluster:vars]
+#   ansible_become=yes
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/k8s-multi-node.yml
+#
+# Key variables:
+#   kubernetes_version       - Kubernetes version to install (default: 1.35.3)
+#   k8s_cni_plugin           - CNI plugin: calico, flannel, weave, cilium (default: cilium)
+#   k8s_pod_subnet           - Pod network CIDR
+#   k8s_service_subnet       - Service network CIDR
+#   k8s_control_plane_endpoint - Set to a load balancer VIP or DNS name if you want to
+#                                add more control plane nodes later. If not set, defaults
+#                                to the master's IP address.
+#
+# To use a specific control plane endpoint (recommended for production):
+#   ansible-playbook -i inventory playbooks/k8s-multi-node.yml \
+#     -e "k8s_control_plane_endpoint=k8s-api.example.com:6443"
+
+# ---------------------------------------------------------------------------
+# Phase 1: Install control plane
+# ---------------------------------------------------------------------------
+- name: "Deploy Kubernetes control plane"
+  hosts: k8s_masters
+  become: true
+  gather_facts: true
+
+  vars:
+    k8s_node_role: master
+    k8s_master_group: k8s_masters
+    k8s_cni_plugin: cilium
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    # k8s_control_plane_endpoint: "k8s-api.example.com:6443"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+# ---------------------------------------------------------------------------
+# Phase 2: Join worker nodes
+# ---------------------------------------------------------------------------
+- name: "Join worker nodes to cluster"
+  hosts: k8s_workers
+  become: true
+  gather_facts: true
+  serial: 1  # Join one worker at a time to avoid token races
+
+  vars:
+    k8s_node_role: worker
+    k8s_master_group: k8s_masters
+    k8s_install_cni: false  # CNI is installed by the master play above
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    # k8s_control_plane_endpoint: "k8s-api.example.com:6443"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+# ---------------------------------------------------------------------------
+# Phase 3: Verify cluster
+# ---------------------------------------------------------------------------
+- name: "Verify cluster state"
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: "verify | wait for all nodes to be Ready"
+      command: >
+        kubectl get nodes
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+      register: _node_states
+      until: _node_states.stdout_lines | map('split', ' ') | map('last') | list | unique == ['True']
+      retries: 30
+      delay: 10
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | display cluster nodes"
+      command: kubectl get nodes -o wide
+      register: _final_nodes
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | show node state"
+      debug:
+        var: _final_nodes.stdout_lines
+
+    - name: "verify | display post-deployment instructions"
+      debug:
+        msg:
+          - "Cluster deployment complete."
+          - ""
+          - "To use kubectl from your workstation:"
+          - "  scp {{ ansible_user }}@{{ ansible_host }}:/etc/kubernetes/admin.conf ~/.kube/config"
+          - ""
+          - "Check cluster health:"
+          - "  kubectl get nodes -o wide"
+          - "  kubectl get pods -A"

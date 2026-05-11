@@ -1,0 +1,332 @@
+# SPDX-License-Identifier: MIT-0
+---
+# Single-node control plane upgrade.
+#
+# Order follows the kubeadm documentation:
+#   1. Add the target version repository (pkgs.k8s.io pattern from kubernetes_install.yml)
+#   2. Upgrade the kubeadm package to the target version
+#   3. Run kubeadm upgrade plan (informational, does not mutate)
+#   4. Run kubeadm upgrade apply (mutates control plane components)
+#   5. Optional: cordon and drain the node (off by default for single-node)
+#   6. Upgrade kubelet and kubectl packages
+#   7. Reload systemd and restart kubelet
+#   8. Optional: uncordon
+#   9. Wait for node to return to Ready
+#  10. Verify the new server version
+#
+# Multi-node expansion: when adding worker upgrade support, extract steps 5-8
+# into upgrade_workers.yml and loop over the worker inventory group.
+
+- name: "upgrade_control | set target version repo minor"
+  set_fact:
+    _upg_repo_major: "{{ k8s_upgrade_target_version.split('.')[0] }}"
+    _upg_repo_minor: "{{ k8s_upgrade_target_version.split('.')[1] }}"
+
+# ---------------------------------------------------------------------------
+# 1. Repository update - mirrors kubernetes_install.yml pattern
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | repo | add target version apt repository (Debian)"
+  block:
+    - name: "upgrade_control | repo | install signing key"
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/deb/Release.key |
+        gpg --batch --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      become: true
+
+    - name: "upgrade_control | repo | add apt repository"
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/deb/ /"
+        state: present
+        filename: kubernetes
+        update_cache: true
+      become: true
+  when: ansible_distribution == "Ubuntu"
+
+- name: "upgrade_control | repo | add target version yum/dnf repository (RedHat)"
+  yum_repository:
+    name: kubernetes
+    description: "Kubernetes v{{ _upg_repo_major }}.{{ _upg_repo_minor }}"
+    baseurl: "https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/rpm/"
+    gpgcheck: true
+    gpgkey: "https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/rpm/repodata/repomd.xml.key"
+    enabled: true
+  become: true
+  when: ansible_os_family == "RedHat"
+
+# ---------------------------------------------------------------------------
+# 2. Upgrade kubeadm first
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | kubeadm | unhold package (Debian)"
+  command: apt-mark unhold kubeadm
+  become: true
+  changed_when: true
+  when: ansible_distribution == "Ubuntu"
+
+- name: "upgrade_control | kubeadm | install target version (Debian)"
+  apt:
+    name: "kubeadm={{ k8s_upgrade_target_version }}*"
+    state: present
+    update_cache: false
+    allow_downgrade: false
+  become: true
+  when: ansible_distribution == "Ubuntu"
+
+- name: "upgrade_control | kubeadm | hold package (Debian)"
+  command: apt-mark hold kubeadm
+  become: true
+  changed_when: true
+  when: ansible_distribution == "Ubuntu"
+
+- name: "upgrade_control | kubeadm | install target version (RedHat yum)"
+  yum:
+    name: "kubeadm-{{ k8s_upgrade_target_version }}"
+    state: present
+    update_cache: false
+  become: true
+  when:
+    - ansible_os_family == "RedHat"
+    - ansible_pkg_mgr == "yum"
+
+- name: "upgrade_control | kubeadm | install target version (RedHat dnf)"
+  dnf:
+    name: "kubeadm-{{ k8s_upgrade_target_version }}"
+    state: present
+    update_cache: false
+  become: true
+  when:
+    - ansible_os_family == "RedHat"
+    - ansible_pkg_mgr in ["dnf", "dnf5"]
+
+# ---------------------------------------------------------------------------
+# 3. kubeadm upgrade plan (informational)
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | kubeadm | run upgrade plan"
+  command: kubeadm upgrade plan v{{ k8s_upgrade_target_version }}
+  register: _kubeadm_plan
+  changed_when: false
+  become: true
+
+- name: "upgrade_control | kubeadm | show upgrade plan output"
+  debug:
+    var: _kubeadm_plan.stdout_lines
+
+# ---------------------------------------------------------------------------
+# 4. kubeadm upgrade apply
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | kubeadm | apply upgrade to v{{ k8s_upgrade_target_version }}"
+  command: kubeadm upgrade apply v{{ k8s_upgrade_target_version }} --yes
+  register: _kubeadm_apply
+  changed_when: true
+  become: true
+
+- name: "upgrade_control | kubeadm | show apply output"
+  debug:
+    var: _kubeadm_apply.stdout_lines
+
+# ---------------------------------------------------------------------------
+# 4b. Patch apiserver manifest to include all etcd endpoints (HA only)
+#
+# kubeadm upgrade apply rewrites the apiserver manifest with only the local
+# etcd endpoint (https://127.0.0.1:2379). In a mixed-version HA cluster the
+# newly upgraded etcd node may not be the raft leader and can fail linearizable
+# reads, causing the apiserver to crash-loop. Listing all etcd members lets
+# the apiserver reach a healthy member even if the local one is struggling.
+#
+# Only runs when k8s_upgrade_additional_group is defined and non-empty.
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | etcd | build all-member endpoint list"
+  set_fact:
+    _all_etcd_endpoints: >-
+      {{
+        (groups[k8s_upgrade_primary_group] | default([]) +
+         groups[k8s_upgrade_additional_group] | default([]))
+        | unique
+        | map('extract', hostvars, 'ansible_host')
+        | select('defined')
+        | map('regex_replace', '^(.*)$', 'https://\1:2379')
+        | join(',')
+      }}
+  when:
+    - k8s_upgrade_additional_group | default('') != ''
+    - groups[k8s_upgrade_additional_group] | default([]) | length > 0
+
+- name: "upgrade_control | etcd | patch apiserver manifest to use all etcd endpoints"
+  replace:
+    path: /etc/kubernetes/manifests/kube-apiserver.yaml
+    regexp: '(--etcd-servers=)\S+'
+    replace: '\1{{ _all_etcd_endpoints }}'
+  become: true
+  when:
+    - k8s_upgrade_additional_group | default('') != ''
+    - groups[k8s_upgrade_additional_group] | default([]) | length > 0
+    - _all_etcd_endpoints is defined
+
+# ---------------------------------------------------------------------------
+# 5. Optional drain (off by default for single-node)
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | drain | cordon node"
+  command: kubectl cordon {{ ansible_hostname }}
+  changed_when: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: k8s_upgrade_drain_node | bool
+
+- name: "upgrade_control | drain | drain node"
+  command: >
+    kubectl drain {{ ansible_hostname }}
+    --ignore-daemonsets
+    --delete-emptydir-data
+    --timeout={{ k8s_upgrade_drain_timeout }}
+    --grace-period={{ k8s_upgrade_drain_grace_period }}
+  changed_when: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: k8s_upgrade_drain_node | bool
+
+# ---------------------------------------------------------------------------
+# 6. Upgrade kubelet and kubectl
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | kubelet | unhold packages (Debian)"
+  command: apt-mark unhold kubelet kubectl
+  become: true
+  changed_when: true
+  when: ansible_distribution == "Ubuntu"
+
+- name: "upgrade_control | kubelet | install target versions (Debian)"
+  apt:
+    name:
+      - "kubelet={{ k8s_upgrade_target_version }}*"
+      - "kubectl={{ k8s_upgrade_target_version }}*"
+    state: present
+    update_cache: false
+    allow_downgrade: false
+  become: true
+  when: ansible_distribution == "Ubuntu"
+
+- name: "upgrade_control | kubelet | hold packages (Debian)"
+  command: apt-mark hold kubelet kubectl
+  become: true
+  changed_when: true
+  when: ansible_distribution == "Ubuntu"
+
+- name: "upgrade_control | kubelet | install target versions (RedHat yum)"
+  yum:
+    name:
+      - "kubelet-{{ k8s_upgrade_target_version }}"
+      - "kubectl-{{ k8s_upgrade_target_version }}"
+    state: present
+  become: true
+  when:
+    - ansible_os_family == "RedHat"
+    - ansible_pkg_mgr == "yum"
+
+- name: "upgrade_control | kubelet | install target versions (RedHat dnf)"
+  dnf:
+    name:
+      - "kubelet-{{ k8s_upgrade_target_version }}"
+      - "kubectl-{{ k8s_upgrade_target_version }}"
+    state: present
+  become: true
+  when:
+    - ansible_os_family == "RedHat"
+    - ansible_pkg_mgr in ["dnf", "dnf5"]
+
+# ---------------------------------------------------------------------------
+# 7. Restart kubelet
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | kubelet | daemon-reload and restart"
+  systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: true
+    enabled: true
+  become: true
+
+# ---------------------------------------------------------------------------
+# 8. Uncordon (only if we drained)
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | drain | uncordon node"
+  command: kubectl uncordon {{ ansible_hostname }}
+  changed_when: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: k8s_upgrade_drain_node | bool
+
+# ---------------------------------------------------------------------------
+# 9. Wait for node Ready
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | verify | wait for node to return to Ready"
+  command: >
+    kubectl get node {{ ansible_hostname }}
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: _node_ready_check
+  until: _node_ready_check.stdout == "True"
+  retries: 36
+  delay: 10
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  delegate_to: >-
+    {{
+      groups[k8s_upgrade_additional_group][0]
+      if (k8s_upgrade_additional_group | default('') != '' and
+          groups[k8s_upgrade_additional_group] | default([]) | length > 0)
+      else inventory_hostname
+    }}
+
+# ---------------------------------------------------------------------------
+# 10. Verify new server version
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_control | verify | confirm server version"
+  command: kubectl version --output=json
+  register: _post_upgrade_version
+  changed_when: false
+  failed_when: false
+  retries: 12
+  delay: 10
+  until: _post_upgrade_version.rc == 0
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "upgrade_control | verify | parse post-upgrade server version"
+  set_fact:
+    _post_server_minor: >-
+      {{ (_post_upgrade_version.stdout | from_json).serverVersion.minor | replace('+', '') | int }}
+
+- name: "upgrade_control | verify | assert server is now on target minor version"
+  assert:
+    that: _post_server_minor | int == k8s_upgrade_to.split('.')[1] | int
+    fail_msg: >
+      Server version after upgrade is still reporting minor {{ _post_server_minor }},
+      expected {{ k8s_upgrade_to.split('.')[1] }}. Check kubelet and apiserver logs.
+
+- name: "upgrade_control | verify | show cluster nodes"
+  command: kubectl get nodes -o wide
+  register: _final_nodes
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "upgrade_control | verify | display final node state"
+  debug:
+    var: _final_nodes.stdout_lines
+
+- name: "upgrade_control | summary"
+  debug:
+    msg:
+      - "Control plane upgrade complete."
+      - "  From : {{ k8s_upgrade_from }}"
+      - "  To   : {{ k8s_upgrade_target_version }}"
+      - "  Node : {{ ansible_hostname }}"
+      - "Snapshot retained at: {{ k8s_upgrade_snapshot_dir }}/"

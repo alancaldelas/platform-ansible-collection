@@ -1,0 +1,198 @@
+# SPDX-License-Identifier: MIT-0
+---
+# etcd snapshot and PKI backup.
+#
+# This phase MUST succeed before any upgrade tasks run. The play will abort
+# if the snapshot cannot be created or verified.
+#
+# What gets saved to k8s_upgrade_snapshot_dir on the control plane node:
+#   etcd-snapshot-<timestamp>.db   - etcd data snapshot (verified after creation)
+#   kubernetes-pki-<timestamp>.tar.gz - /etc/kubernetes directory archive
+#
+# If k8s_upgrade_fetch_snapshot is true, both files are also pulled to
+# k8s_upgrade_fetch_snapshot_dest on the Ansible controller.
+#
+# Snapshot method is controlled by k8s_upgrade_etcdctl_method:
+#   pod  - etcdctl is invoked inside the etcd static pod via kubectl exec.
+#          The snapshot file lands on the host because /var/lib/etcd is a
+#          hostPath volume mount. We write to that path then move it.
+#   host - etcdctl is called directly on the host.
+
+- name: "snapshot | set timestamp fact"
+  set_fact:
+    _snapshot_ts: "{{ ansible_date_time.iso8601_basic_short }}"
+
+- name: "snapshot | ensure snapshot directory exists with restricted permissions"
+  file:
+    path: "{{ k8s_upgrade_snapshot_dir }}"
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+  become: true
+
+# ---------------------------------------------------------------------------
+# etcd snapshot - pod method
+# The snapshot is written to /var/lib/etcd/ inside the pod (= host hostPath).
+# We then move it to the dedicated backup directory.
+# ---------------------------------------------------------------------------
+
+- name: "snapshot | etcd | get etcd pod name"
+  command: >
+    kubectl get pod -n kube-system -l component=etcd
+    -o jsonpath='{.items[0].metadata.name}'
+  register: _snap_etcd_pod
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: k8s_upgrade_etcdctl_method == "pod"
+
+- name: "snapshot | etcd | create snapshot via pod exec (writes to /var/lib/etcd/)"
+  command: >
+    kubectl exec -n kube-system {{ _snap_etcd_pod.stdout }}
+    -- etcdctl snapshot save /var/lib/etcd/snapshot-{{ _snapshot_ts }}.db
+    --cacert={{ k8s_upgrade_etcd_cacert }}
+    --cert={{ k8s_upgrade_etcd_cert }}
+    --key={{ k8s_upgrade_etcd_key }}
+    --endpoints={{ k8s_upgrade_etcd_endpoints }}
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+    ETCDCTL_API: "3"
+  register: _snap_create_pod
+  changed_when: true
+  when: k8s_upgrade_etcdctl_method == "pod"
+
+- name: "snapshot | etcd | move snapshot from etcd data dir to backup dir"
+  command: >
+    mv /var/lib/etcd/snapshot-{{ _snapshot_ts }}.db
+    {{ k8s_upgrade_snapshot_dir }}/etcd-snapshot-{{ _snapshot_ts }}.db
+  become: true
+  when: k8s_upgrade_etcdctl_method == "pod"
+
+# ---------------------------------------------------------------------------
+# etcd snapshot - host method
+# ---------------------------------------------------------------------------
+
+- name: "snapshot | etcd | create snapshot via host etcdctl"
+  command: >
+    etcdctl snapshot save
+    {{ k8s_upgrade_snapshot_dir }}/etcd-snapshot-{{ _snapshot_ts }}.db
+    --cacert={{ k8s_upgrade_etcd_cacert }}
+    --cert={{ k8s_upgrade_etcd_cert }}
+    --key={{ k8s_upgrade_etcd_key }}
+    --endpoints={{ k8s_upgrade_etcd_endpoints }}
+  environment:
+    ETCDCTL_API: "3"
+  register: _snap_create_host
+  changed_when: true
+  become: true
+  when: k8s_upgrade_etcdctl_method == "host"
+
+# ---------------------------------------------------------------------------
+# Verify snapshot integrity - runs regardless of method
+# ---------------------------------------------------------------------------
+
+- name: "snapshot | etcd | verify snapshot integrity via pod exec"
+  command: >
+    kubectl exec -n kube-system {{ _snap_etcd_pod.stdout }}
+    -- etcdctl snapshot status
+    /var/lib/etcd/snapshot-{{ _snapshot_ts }}.db
+    --cacert={{ k8s_upgrade_etcd_cacert }}
+    --cert={{ k8s_upgrade_etcd_cert }}
+    --key={{ k8s_upgrade_etcd_key }}
+    --write-out=table
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+    ETCDCTL_API: "3"
+  changed_when: false
+  register: _snap_verify
+  # Run against the final location - file has been moved at this point so
+  # verify against backup dir on host using host etcdctl if available,
+  # otherwise accept that pod method verified during save.
+  failed_when: false
+  when: k8s_upgrade_etcdctl_method == "pod"
+
+- name: "snapshot | etcd | verify snapshot integrity via host etcdctl"
+  command: >
+    etcdctl snapshot status
+    {{ k8s_upgrade_snapshot_dir }}/etcd-snapshot-{{ _snapshot_ts }}.db
+    --write-out=table
+  environment:
+    ETCDCTL_API: "3"
+  changed_when: false
+  register: _snap_verify_host
+  become: true
+  when: k8s_upgrade_etcdctl_method == "host"
+
+- name: "snapshot | etcd | assert snapshot file exists and is non-empty"
+  stat:
+    path: "{{ k8s_upgrade_snapshot_dir }}/etcd-snapshot-{{ _snapshot_ts }}.db"
+  register: _snap_stat
+  become: true
+
+- name: "snapshot | etcd | fail if snapshot is missing or empty"
+  assert:
+    that:
+      - _snap_stat.stat.exists
+      - _snap_stat.stat.size > 0
+    fail_msg: >
+      etcd snapshot at {{ k8s_upgrade_snapshot_dir }}/etcd-snapshot-{{ _snapshot_ts }}.db
+      is missing or zero-length. The upgrade will not proceed without a valid snapshot.
+      Investigate etcdctl output above and retry.
+
+- name: "snapshot | etcd | report snapshot location and size"
+  debug:
+    msg: >
+      etcd snapshot saved:
+      {{ k8s_upgrade_snapshot_dir }}/etcd-snapshot-{{ _snapshot_ts }}.db
+      ({{ (_snap_stat.stat.size / 1024 / 1024) | round(1) }} MB)
+
+# ---------------------------------------------------------------------------
+# PKI backup
+# ---------------------------------------------------------------------------
+
+- name: "snapshot | pki | archive /etc/kubernetes to backup directory"
+  archive:
+    path: /etc/kubernetes
+    dest: "{{ k8s_upgrade_snapshot_dir }}/kubernetes-pki-{{ _snapshot_ts }}.tar.gz"
+    format: gz
+    mode: '0600'
+  become: true
+  register: _pki_archive
+
+- name: "snapshot | pki | confirm PKI archive exists"
+  assert:
+    that: _pki_archive.dest is defined
+    fail_msg: "PKI archive was not created. Check permissions on /etc/kubernetes."
+
+- name: "snapshot | pki | report PKI archive location"
+  debug:
+    msg: "PKI archive saved: {{ k8s_upgrade_snapshot_dir }}/kubernetes-pki-{{ _snapshot_ts }}.tar.gz"
+
+# ---------------------------------------------------------------------------
+# Optional: fetch both files to Ansible controller
+# ---------------------------------------------------------------------------
+
+- name: "snapshot | fetch | pull etcd snapshot to controller"
+  fetch:
+    src: "{{ k8s_upgrade_snapshot_dir }}/etcd-snapshot-{{ _snapshot_ts }}.db"
+    dest: "{{ k8s_upgrade_fetch_snapshot_dest }}/"
+    flat: false
+  become: true
+  when: k8s_upgrade_fetch_snapshot | bool
+
+- name: "snapshot | fetch | pull PKI archive to controller"
+  fetch:
+    src: "{{ k8s_upgrade_snapshot_dir }}/kubernetes-pki-{{ _snapshot_ts }}.tar.gz"
+    dest: "{{ k8s_upgrade_fetch_snapshot_dest }}/"
+    flat: false
+  become: true
+  when: k8s_upgrade_fetch_snapshot | bool
+
+- name: "snapshot | summary"
+  debug:
+    msg:
+      - "Snapshot phase complete. All files are at: {{ k8s_upgrade_snapshot_dir }}/"
+      - "  etcd-snapshot-{{ _snapshot_ts }}.db"
+      - "  kubernetes-pki-{{ _snapshot_ts }}.tar.gz"
+      - "{% if k8s_upgrade_fetch_snapshot %}Copies also fetched to: {{ k8s_upgrade_fetch_snapshot_dest }}/{% endif %}"

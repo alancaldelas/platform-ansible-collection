@@ -1,0 +1,126 @@
+# SPDX-License-Identifier: MIT-0
+---
+# kube-apiserver static pod manifest flag audit (read-only).
+#
+# Reads /etc/kubernetes/manifests/kube-apiserver.yaml and checks for:
+#   1. Flags that are removed outright in the target version.
+#   2. Feature gates passed via --feature-gates that have graduated to GA
+#      (and therefore had their gate entry removed from the binary).
+#
+# Failures here mean kubeadm upgrade apply will likely fail or the apiserver
+# will refuse to start post-upgrade. Fix the manifest before proceeding.
+#
+# The removal data is loaded from vars/removed_flags_<from>_<to>.yml.
+
+- name: "preflight_flags | load flag removal map for {{ k8s_upgrade_from }} -> {{ k8s_upgrade_to }}"
+  include_vars: "removed_flags_{{ k8s_upgrade_from | replace('.', '_') }}_{{ k8s_upgrade_to | replace('.', '_') }}.yml"
+
+- name: "preflight_flags | read kube-apiserver static pod manifest"
+  slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: _apiserver_manifest_raw
+  become: true
+
+- name: "preflight_flags | parse manifest"
+  set_fact:
+    _apiserver_manifest: "{{ _apiserver_manifest_raw.content | b64decode | from_yaml }}"
+
+- name: "preflight_flags | extract command args"
+  set_fact:
+    _apiserver_args: "{{ _apiserver_manifest.spec.containers[0].command }}"
+
+# ---------------------------------------------------------------------------
+# Check 1: removed flags
+# ---------------------------------------------------------------------------
+
+- name: "preflight_flags | find removed flags present in manifest"
+  set_fact:
+    _found_removed_flags: >-
+      {{
+        k8s_removed_flags | default([])
+        | selectattr('flag', 'defined')
+        | selectattr('flag', 'in', _apiserver_args | map('regex_replace', '=.*', '') | list)
+        | list
+      }}
+
+- name: "preflight_flags | fail if removed flags are present"
+  assert:
+    that: _found_removed_flags | length == 0
+    fail_msg: |
+      The kube-apiserver manifest contains flags that are removed in
+      Kubernetes v{{ k8s_upgrade_to }}. Remove or replace them before upgrading:
+
+      {% for f in _found_removed_flags %}
+        Flag     : {{ f.flag }}
+        Removed  : v{{ f.removed_in }}
+        Action   : {{ f.action }}
+        {% if f.replacement is defined and f.replacement | length > 0 %}
+        Replacement: {{ f.replacement }}
+        {% endif %}
+      {% endfor %}
+
+      Edit /etc/kubernetes/manifests/kube-apiserver.yaml to remove these flags.
+
+# ---------------------------------------------------------------------------
+# Check 2: graduated feature gates
+# Feature gates that reached GA have their gate entry removed from the binary.
+# Passing them causes the apiserver to fail at startup.
+# ---------------------------------------------------------------------------
+
+- name: "preflight_flags | extract --feature-gates value from args"
+  set_fact:
+    _feature_gates_raw: >-
+      {{
+        _apiserver_args
+        | select('match', '^--feature-gates=')
+        | map('regex_replace', '^--feature-gates=', '')
+        | first
+        | default('')
+      }}
+
+- name: "preflight_flags | parse active gate names"
+  set_fact:
+    _active_gate_names: >-
+      {{
+        _feature_gates_raw.split(',')
+        | map('regex_replace', '=.*', '')
+        | map('trim')
+        | reject('equalto', '')
+        | list
+      }}
+  when: _feature_gates_raw | length > 0
+
+- name: "preflight_flags | find graduated gates still in manifest"
+  set_fact:
+    _found_graduated_gates: >-
+      {{
+        k8s_graduated_gates | default([])
+        | selectattr('name', 'in', _active_gate_names | default([]))
+        | list
+      }}
+
+- name: "preflight_flags | fail if graduated (removed) gates are in --feature-gates"
+  assert:
+    that: _found_graduated_gates | length == 0
+    fail_msg: |
+      The kube-apiserver manifest references feature gates that graduated to GA
+      and were removed in Kubernetes v{{ k8s_upgrade_to }}. The apiserver will
+      refuse to start if these remain in --feature-gates:
+
+      {% for g in _found_graduated_gates %}
+        Gate       : {{ g.name }}
+        Graduated  : v{{ g.graduated_in }}
+        Default    : {{ g.default }}
+        Note       : {{ g.note }}
+      {% endfor %}
+
+      Remove these gate entries from --feature-gates in
+      /etc/kubernetes/manifests/kube-apiserver.yaml.
+  when: _active_gate_names is defined
+
+- name: "preflight_flags | report no flag issues found"
+  debug:
+    msg: "kube-apiserver flag audit passed. No removed flags or graduated gates detected."
+  when:
+    - _found_removed_flags | length == 0
+    - _found_graduated_gates | default([]) | length == 0

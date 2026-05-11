@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: MIT-0
+---
+# defaults file for k8s_upgrade
+
+# ---------------------------------------------------------------------------
+# Upgrade path - BOTH must be set explicitly by the operator.
+# Only single minor version steps are permitted (e.g. "1.33" -> "1.34").
+# ---------------------------------------------------------------------------
+k8s_upgrade_from: ""            # Current cluster minor version, e.g. "1.33"
+k8s_upgrade_to: ""              # Target minor version, e.g. "1.34"
+k8s_upgrade_target_version: ""  # Full version for kubeadm apply, e.g. "1.34.0"
+
+# ---------------------------------------------------------------------------
+# Deprecated API detection
+#
+# k8s_upgrade_use_pluto: true  - downloads and runs Pluto against the live cluster
+#                                https://github.com/FairwindsOps/pluto
+# k8s_upgrade_use_pluto: false - uses the built-in hardcoded API removal map
+#                                loaded from vars/removed_apis_<from>_<to>.yml
+#                                (airgap-friendly, no binary download required)
+# ---------------------------------------------------------------------------
+k8s_upgrade_use_pluto: true
+k8s_upgrade_pluto_version: "5.21.0"
+k8s_upgrade_pluto_install_dir: "/usr/local/bin"
+k8s_upgrade_arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}"
+
+# ---------------------------------------------------------------------------
+# etcd snapshot configuration
+#
+# Snapshots are written to k8s_upgrade_snapshot_dir on the control plane node.
+# This location is intentional: the node must be reachable to run the upgrade,
+# so the snapshot is always accessible. The directory is separate from
+# /var/lib/etcd to avoid interference with live etcd data.
+#
+# The /etc/kubernetes PKI directory is also archived to the same location.
+#
+# Set k8s_upgrade_fetch_snapshot: true to additionally pull both archives to
+# the Ansible controller as a secondary off-node copy.
+# ---------------------------------------------------------------------------
+k8s_upgrade_snapshot_dir: "/var/lib/etcd-backups"
+k8s_upgrade_fetch_snapshot: false
+k8s_upgrade_fetch_snapshot_dest: "{{ playbook_dir }}/backups"
+
+# How etcdctl is invoked. Options:
+#   pod  - exec into the etcd static pod (default; works with kubeadm as-is,
+#          no etcdctl binary required on the host)
+#   host - call etcdctl directly on the host (requires etcdctl installed)
+k8s_upgrade_etcdctl_method: "pod"
+
+# etcd TLS paths (kubeadm defaults)
+k8s_upgrade_etcd_cacert: "/etc/kubernetes/pki/etcd/ca.crt"
+k8s_upgrade_etcd_cert: "/etc/kubernetes/pki/etcd/peer.crt"
+k8s_upgrade_etcd_key: "/etc/kubernetes/pki/etcd/peer.key"
+k8s_upgrade_etcd_endpoints: "https://127.0.0.1:2379"
+
+# ---------------------------------------------------------------------------
+# Certificate warning threshold. Certs expiring within this many days trigger
+# a warning. Already-expired certs block the upgrade entirely.
+# ---------------------------------------------------------------------------
+k8s_upgrade_cert_warn_days: 30
+
+# ---------------------------------------------------------------------------
+# Single-node drain behaviour
+#
+# Draining a single-node cluster evicts all pods including system workloads,
+# causing a brief outage window. Defaulting to false is intentional for
+# single-node - the upgrade itself already requires a maintenance window.
+#
+# When multi-node support is added this should default to true for workers.
+# ---------------------------------------------------------------------------
+k8s_upgrade_drain_node: false
+k8s_upgrade_drain_timeout: "300s"
+k8s_upgrade_drain_grace_period: 30
+
+# ---------------------------------------------------------------------------
+# HA multi-node settings
+#
+# k8s_upgrade_primary_group: inventory group name of the primary control plane.
+# Used by upgrade_additional_cp.yml to delegate kubectl commands (cordon,
+# drain, uncordon, node Ready checks) back to a node that has KUBECONFIG.
+#
+# k8s_upgrade_additional_group: inventory group name of additional control
+# planes. When set, upgrade_control.yml will:
+#   1. Patch the apiserver manifest after kubeadm upgrade apply to include all
+#      etcd member endpoints (not just localhost), preventing the local etcd
+#      from being a single point of failure during the mixed-version window.
+#   2. Delegate the node-Ready wait to the first additional CP so the check
+#      runs against a healthy apiserver even if the primary's is restarting.
+# Leave empty ("") for single-node clusters.
+# ---------------------------------------------------------------------------
+k8s_upgrade_primary_group: "k8s_masters"
+k8s_upgrade_additional_group: ""

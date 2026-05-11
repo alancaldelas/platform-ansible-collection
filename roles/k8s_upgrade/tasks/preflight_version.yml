@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: MIT-0
+---
+# Validates the upgrade path before touching anything.
+#
+# Checks:
+#   1. k8s_upgrade_from and k8s_upgrade_to differ by exactly one minor version.
+#   2. k8s_upgrade_target_version starts with k8s_upgrade_to.
+#   3. The live cluster server version matches k8s_upgrade_from.
+#
+# All checks are read-only (kubectl version).
+
+- name: "preflight_version | parse version components"
+  set_fact:
+    _upg_from_major: "{{ k8s_upgrade_from.split('.')[0] | int }}"
+    _upg_from_minor: "{{ k8s_upgrade_from.split('.')[1] | int }}"
+    _upg_to_major: "{{ k8s_upgrade_to.split('.')[0] | int }}"
+    _upg_to_minor: "{{ k8s_upgrade_to.split('.')[1] | int }}"
+
+- name: "preflight_version | assert upgrade is exactly one minor version step"
+  assert:
+    that:
+      - _upg_from_major == _upg_to_major
+      - (_upg_to_minor | int) - (_upg_from_minor | int) == 1
+    fail_msg: >
+      Upgrade must be exactly one minor version at a time.
+      Requested: {{ k8s_upgrade_from }} -> {{ k8s_upgrade_to }}
+      Skipping minor versions is unsupported by kubeadm and this role.
+
+- name: "preflight_version | assert target_version matches upgrade_to"
+  assert:
+    that:
+      - k8s_upgrade_target_version.startswith(k8s_upgrade_to ~ '.')
+    fail_msg: >
+      k8s_upgrade_target_version ({{ k8s_upgrade_target_version }}) must begin
+      with k8s_upgrade_to ({{ k8s_upgrade_to }}).
+      Example: k8s_upgrade_to: "1.34"  k8s_upgrade_target_version: "1.34.0"
+
+- name: "preflight_version | query live cluster version"
+  command: kubectl version --output=json
+  register: _kubectl_version_raw
+  changed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "preflight_version | parse server version"
+  set_fact:
+    _cluster_major: "{{ (_kubectl_version_raw.stdout | from_json).serverVersion.major | int }}"
+    _cluster_minor: "{{ (_kubectl_version_raw.stdout | from_json).serverVersion.minor | replace('+', '') | int }}"
+
+- name: "preflight_version | assert cluster is on the expected source version"
+  assert:
+    that:
+      - _cluster_major == _upg_from_major | int
+      - _cluster_minor == _upg_from_minor | int
+    fail_msg: >
+      Live cluster is running {{ _cluster_major }}.{{ _cluster_minor }} but
+      k8s_upgrade_from is set to {{ k8s_upgrade_from }}.
+      Correct k8s_upgrade_from to match the actual cluster version before proceeding.
+
+- name: "preflight_version | report verified upgrade path"
+  debug:
+    msg: "Upgrade path verified: {{ k8s_upgrade_from }} -> {{ k8s_upgrade_target_version }} (live cluster confirmed on {{ _cluster_major }}.{{ _cluster_minor }})"

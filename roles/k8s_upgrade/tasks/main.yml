@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: MIT-0
+---
+# k8s_upgrade - single-node control plane upgrade orchestrator
+#
+# Phases are strictly ordered. Any failure in a pre-flight phase halts the
+# play before any state changes are made to the cluster.
+#
+# Phase 1 (pre-flight) is entirely read-only and safe to run independently:
+#   ansible-playbook ... --tags preflight
+#
+# Future multi-node support: add upgrade_workers.yml after upgrade_control.yml
+# and gate it behind a k8s_upgrade_node_role variable.
+
+- name: "k8s_upgrade | assert required variables are set"
+  assert:
+    that:
+      - k8s_upgrade_from | length > 0
+      - k8s_upgrade_to | length > 0
+      - k8s_upgrade_target_version | length > 0
+    fail_msg: >
+      k8s_upgrade_from, k8s_upgrade_to, and k8s_upgrade_target_version must
+      all be explicitly set. Example:
+        k8s_upgrade_from: "1.33"
+        k8s_upgrade_to: "1.34"
+        k8s_upgrade_target_version: "1.34.0"
+  tags: [always]
+
+# --- Phase 1: Pre-flight (read-only, safe to run with --tags preflight) ---
+
+- name: "k8s_upgrade | phase 1a: version enforcement"
+  import_tasks: preflight_version.yml
+  tags: [preflight, preflight_version]
+
+- name: "k8s_upgrade | phase 1b: cluster health"
+  import_tasks: preflight_health.yml
+  tags: [preflight, preflight_health]
+
+- name: "k8s_upgrade | phase 1c: deprecated API detection"
+  import_tasks: preflight_apis.yml
+  tags: [preflight, preflight_apis]
+
+- name: "k8s_upgrade | phase 1d: kube-apiserver flag audit"
+  import_tasks: preflight_flags.yml
+  tags: [preflight, preflight_flags]
+
+# --- Phase 2: Snapshot (must succeed; blocks all mutation below) ---
+
+- name: "k8s_upgrade | phase 2: etcd snapshot and PKI backup"
+  import_tasks: snapshot.yml
+  tags: [snapshot]
+
+# --- Phase 3: Upgrade ---
+
+- name: "k8s_upgrade | phase 3: control plane upgrade"
+  import_tasks: upgrade_control.yml
+  tags: [upgrade]
+
+# Future: upgrade_workers.yml goes here, gated by k8s_upgrade_node_role

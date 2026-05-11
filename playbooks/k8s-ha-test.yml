@@ -1,0 +1,94 @@
+---
+# Test playbook for 3-node HA control plane on fedora test VMs.
+# fedora-node-1: primary control plane
+# fedora-node-2: additional control plane
+# fedora-node-3: additional control plane
+
+- name: "HA Phase 1: Deploy primary control plane"
+  hosts: k8s_masters
+  become: true
+  gather_facts: true
+  tags: [primary_cp]
+
+  vars:
+    k8s_node_role: master
+    k8s_ha_enabled: true
+    k8s_master_group: k8s_masters
+    k8s_control_plane_endpoint: "10.216.189.10:6443"
+    k8s_cni_plugin: cilium
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    kubernetes_version: "1.33.0"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+- name: "HA Phase 2: Join additional control plane nodes"
+  hosts: k8s_control_planes
+  become: true
+  gather_facts: true
+  serial: 1
+  tags: [additional_cp]
+
+  vars:
+    k8s_node_role: control_plane_join
+    k8s_ha_enabled: true
+    k8s_master_group: k8s_masters
+    k8s_control_plane_endpoint: "10.216.189.10:6443"
+    k8s_install_cni: false
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    kubernetes_version: "1.33.0"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+- name: "HA Phase 3: Verify cluster state"
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+  tags: [verify]
+
+  tasks:
+    - name: "verify | wait for all nodes to be Ready"
+      command: >
+        kubectl get nodes
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+      register: _node_states
+      until: _node_states.stdout_lines | map('split', ' ') | map('last') | list | unique == ['True']
+      retries: 30
+      delay: 10
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | display all cluster nodes"
+      command: kubectl get nodes -o wide
+      register: _final_nodes
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | show node state"
+      debug:
+        var: _final_nodes.stdout_lines
+
+    - name: "verify | check etcd cluster health"
+      shell: |
+        ETCD_POD=$(kubectl get pod -n kube-system -l component=etcd -o jsonpath='{.items[0].metadata.name}')
+        kubectl exec -n kube-system $ETCD_POD -- etcdctl endpoint health \
+          --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+          --cert=/etc/kubernetes/pki/etcd/peer.crt \
+          --key=/etc/kubernetes/pki/etcd/peer.key \
+          --endpoints=https://127.0.0.1:2379 \
+          --cluster
+      register: _etcd_health
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+        ETCDCTL_API: "3"
+
+    - name: "verify | show etcd cluster health"
+      debug:
+        var: _etcd_health.stdout_lines

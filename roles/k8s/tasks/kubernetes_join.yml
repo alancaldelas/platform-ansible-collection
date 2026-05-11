@@ -1,0 +1,158 @@
+# SPDX-License-Identifier: MIT-0
+---
+# Join a worker node to an existing Kubernetes cluster.
+#
+# Steps:
+#   1. Delegate to the master to generate a short-lived bootstrap token
+#      and retrieve the CA cert hash.
+#   2. Build the kubeadm join command from those values.
+#   3. Run kubeadm join on this worker node.
+#   4. Wait for the node to appear Ready in the cluster.
+
+# ---------------------------------------------------------------------------
+# 0. Pre-join assertions
+# ---------------------------------------------------------------------------
+
+- name: "join | assert k8s_master_group is defined"
+  assert:
+    that:
+      - k8s_master_group | length > 0
+    fail_msg: >
+      k8s_master_group is not set. Set it to the inventory group name that
+      contains the control plane node(s), e.g. k8s_master_group: "k8s_masters".
+
+- name: "join | assert k8s_master_group exists in inventory"
+  assert:
+    that:
+      - k8s_master_group in groups
+    fail_msg: >
+      The inventory group '{{ k8s_master_group }}' does not exist.
+      Check that your inventory defines this group and that k8s_master_group
+      matches it exactly (it is case-sensitive).
+
+- name: "join | assert k8s_master_group has at least one host"
+  assert:
+    that:
+      - groups[k8s_master_group] | length > 0
+    fail_msg: >
+      The inventory group '{{ k8s_master_group }}' is empty.
+      Add at least one control plane host to this group.
+
+- name: "join | assert master facts are available (gather_facts must be true)"
+  assert:
+    that:
+      - hostvars[groups[k8s_master_group][0]]['ansible_default_ipv4'] is defined
+    fail_msg: >
+      Facts for the master host '{{ groups[k8s_master_group][0] }}' are not
+      available. Ensure gather_facts: true is set in the master play so that
+      hostvars is populated before the worker play runs.
+
+# ---------------------------------------------------------------------------
+# 1. Generate a bootstrap token on the master
+# ---------------------------------------------------------------------------
+
+- name: "join | generate bootstrap token on master"
+  command: kubeadm token create --ttl {{ k8s_join_token_ttl }} --print-join-command
+  register: _join_command_raw
+  changed_when: true
+  become: true
+  delegate_to: "{{ groups[k8s_master_group][0] }}"
+  run_once: false
+
+# ---------------------------------------------------------------------------
+# 2. Retrieve the CA cert hash on the master
+# ---------------------------------------------------------------------------
+
+- name: "join | get CA cert hash from master"
+  shell: |
+    openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt |
+    openssl rsa -pubin -outform der 2>/dev/null |
+    openssl dgst -sha256 -hex |
+    sed 's/^.* //'
+  register: _ca_hash_raw
+  changed_when: false
+  become: true
+  delegate_to: "{{ groups[k8s_master_group][0] }}"
+  run_once: false
+
+# ---------------------------------------------------------------------------
+# 3. Resolve the API server endpoint
+#    Use k8s_control_plane_endpoint if set, otherwise fall back to the
+#    master's default IPv4 address.
+# ---------------------------------------------------------------------------
+
+- name: "join | set API server endpoint fact"
+  set_fact:
+    _api_endpoint: >-
+      {{
+        k8s_control_plane_endpoint
+        if k8s_control_plane_endpoint | length > 0
+        else hostvars[groups[k8s_master_group][0]]['ansible_default_ipv4']['address'] + ':6443'
+      }}
+
+# ---------------------------------------------------------------------------
+# 4. Extract the token from the join command
+# ---------------------------------------------------------------------------
+
+- name: "join | parse bootstrap token from join command"
+  set_fact:
+    _join_token: "{{ _join_command_raw.stdout | regex_search('--token ([^ ]+)', '\\1') | first }}"
+
+# ---------------------------------------------------------------------------
+# 5. Run kubeadm join on this worker
+# ---------------------------------------------------------------------------
+
+- name: "join | run kubeadm join"
+  command: >
+    kubeadm join {{ _api_endpoint }}
+    --token {{ _join_token }}
+    --discovery-token-ca-cert-hash sha256:{{ _ca_hash_raw.stdout | trim }}
+    {{ k8s_kubeadm_join_extra_args }}
+  become: true
+  register: _kubeadm_join
+  changed_when: true
+
+- name: "join | show kubeadm join output"
+  debug:
+    var: _kubeadm_join.stdout_lines
+
+# ---------------------------------------------------------------------------
+# 6. Wait for this worker to appear Ready on the master
+# ---------------------------------------------------------------------------
+
+- name: "join | wait for node to become Ready"
+  command: >
+    kubectl get node {{ ansible_hostname }}
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: _worker_ready
+  until: _worker_ready.stdout == "True"
+  retries: 24
+  delay: 10
+  changed_when: false
+  become: true
+  delegate_to: "{{ groups[k8s_master_group][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "join | confirm node is Ready"
+  debug:
+    msg: "Node {{ ansible_hostname }} successfully joined and is Ready."
+
+# ---------------------------------------------------------------------------
+# 7. Verify master → worker connectivity on port 10250 (Kubelet API)
+#    Kubelet is now running (node is Ready), so this port must be reachable
+#    from the master for kubectl logs/exec and metrics to work.
+# ---------------------------------------------------------------------------
+
+- name: "join | verify master can reach worker kubelet port (10250)"
+  wait_for:
+    host: "{{ ansible_default_ipv4.address }}"
+    port: 10250
+    timeout: 30
+    state: started
+  delegate_to: "{{ groups[k8s_master_group][0] }}"
+  become: true
+
+- name: "join | confirm master→worker kubelet connectivity"
+  debug:
+    msg: "Master can reach {{ ansible_hostname }}:10250 — kubelet API is accessible."
