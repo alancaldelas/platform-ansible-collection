@@ -106,30 +106,41 @@
 # addon/kube-proxy phase even though the static pod upgrades succeed.
 # ---------------------------------------------------------------------------
 
-- name: "upgrade_additional_cp | preflight | wait for primary apiserver to be responsive"
-  uri:
-    url: "https://{{ hostvars[groups[k8s_upgrade_primary_group][0]]['ansible_host'] }}:6443/healthz"
-    validate_certs: false
-    status_code: 200
-  register: _apiserver_health
-  until: _apiserver_health.status == 200
+- name: "upgrade_additional_cp | preflight | wait for primary apiserver ready to serve"
+  command: kubectl get configmap kubeadm-config -n kube-system
+  register: _apiserver_cm_check
+  until: _apiserver_cm_check.rc == 0
   retries: 36
   delay: 10
-  delegate_to: localhost
+  changed_when: false
+  delegate_to: "{{ groups[k8s_upgrade_primary_group][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
 
 - name: "upgrade_additional_cp | kubeadm | run upgrade node"
   command: kubeadm upgrade node
   register: _kubeadm_node_upgrade
-  changed_when: true
   become: true
-  # The addon/kube-proxy phase queries the primary apiserver, which may be
-  # briefly unreachable during the etcd mixed-version transition. The static
-  # pod upgrades (etcd, apiserver, controller-manager, scheduler) are what
-  # matter; tolerate addon phase failures by only failing when the upgrade
-  # itself did not complete successfully.
+  # Retry: if kubeadm fails before any static pods are touched (e.g. it
+  # cannot read kubeadm-config because the primary apiserver is briefly down
+  # during the etcd mixed-version transition), it is safe to retry - nothing
+  # has been changed on the node yet. Once static pods start upgrading the
+  # success string appears in stdout; we stop retrying at that point.
+  retries: 12
+  delay: 30
+  until: >-
+    _kubeadm_node_upgrade.rc == 0 or
+    'The control plane instance for this node was successfully upgraded'
+    in (_kubeadm_node_upgrade.stdout | default(''))
+  changed_when: >-
+    'The control plane instance for this node was successfully upgraded'
+    in (_kubeadm_node_upgrade.stdout | default(''))
+  # Only hard-fail if retries are exhausted AND the static pod upgrade never
+  # completed. Addon-phase failures (kube-proxy check timing out) are tolerated
+  # because the critical upgrade path already succeeded.
   failed_when:
     - _kubeadm_node_upgrade.rc != 0
-    - "'The control plane instance for this node was successfully upgraded' not in _kubeadm_node_upgrade.stdout"
+    - "'The control plane instance for this node was successfully upgraded' not in (_kubeadm_node_upgrade.stdout | default(''))"
 
 - name: "upgrade_additional_cp | kubeadm | show upgrade node output"
   debug:
@@ -246,7 +257,21 @@
 
 # ---------------------------------------------------------------------------
 # 6. Restart kubelet
+#
+# 6a. Scrub flags removed in 1.35 from kubeadm-flags.env before restarting.
+#     kubeadm upgrade node does not always remove deprecated flags from
+#     /var/lib/kubelet/kubeadm-flags.env when the static pod manifests are
+#     already at the target version (the "equal, skipping" path).
+#     --pod-infra-container-image was removed in 1.35; kubelet refuses to start
+#     if it is still present in the env file.
 # ---------------------------------------------------------------------------
+
+- name: "upgrade_additional_cp | kubelet | remove deprecated flags from kubeadm-flags.env"
+  replace:
+    path: /var/lib/kubelet/kubeadm-flags.env
+    regexp: '\s*--pod-infra-container-image=\S+'
+    replace: ''
+  become: true
 
 - name: "upgrade_additional_cp | kubelet | daemon-reload and restart"
   systemd:
