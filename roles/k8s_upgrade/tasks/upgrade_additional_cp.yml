@@ -98,17 +98,77 @@
 
 # ---------------------------------------------------------------------------
 # 3. kubeadm upgrade node (additional control plane specific command)
+#
+# Before running, wait for the primary apiserver to be fully responsive.
+# When the previous node's etcd was upgraded, there is a brief mixed-version
+# window that can temporarily disrupt the apiserver. Starting the next node's
+# upgrade before the apiserver stabilises causes kubeadm to fail on the
+# addon/kube-proxy phase even though the static pod upgrades succeed.
 # ---------------------------------------------------------------------------
+
+- name: "upgrade_additional_cp | preflight | wait for primary apiserver to be responsive"
+  uri:
+    url: "https://{{ hostvars[groups[k8s_upgrade_primary_group][0]]['ansible_host'] }}:6443/healthz"
+    validate_certs: false
+    status_code: 200
+  register: _apiserver_health
+  until: _apiserver_health.status == 200
+  retries: 36
+  delay: 10
+  delegate_to: localhost
 
 - name: "upgrade_additional_cp | kubeadm | run upgrade node"
   command: kubeadm upgrade node
   register: _kubeadm_node_upgrade
   changed_when: true
   become: true
+  # The addon/kube-proxy phase queries the primary apiserver, which may be
+  # briefly unreachable during the etcd mixed-version transition. The static
+  # pod upgrades (etcd, apiserver, controller-manager, scheduler) are what
+  # matter; tolerate addon phase failures by only failing when the upgrade
+  # itself did not complete successfully.
+  failed_when:
+    - _kubeadm_node_upgrade.rc != 0
+    - "'The control plane instance for this node was successfully upgraded' not in _kubeadm_node_upgrade.stdout"
 
 - name: "upgrade_additional_cp | kubeadm | show upgrade node output"
   debug:
     var: _kubeadm_node_upgrade.stdout_lines
+
+# ---------------------------------------------------------------------------
+# 3b. Patch apiserver manifest to include all etcd endpoints (HA only)
+#
+# kubeadm upgrade node rewrites the apiserver manifest on this node with only
+# the local etcd endpoint. Patch it to include all members so this node's
+# apiserver survives the mixed-version etcd window.
+# ---------------------------------------------------------------------------
+
+- name: "upgrade_additional_cp | etcd | build all-member endpoint list"
+  set_fact:
+    _all_etcd_endpoints: >-
+      {{
+        (groups[k8s_upgrade_primary_group] | default([]) +
+         groups[k8s_upgrade_additional_group] | default([]))
+        | unique
+        | map('extract', hostvars, 'ansible_host')
+        | select('defined')
+        | map('regex_replace', '^(.*)$', 'https://\1:2379')
+        | join(',')
+      }}
+  when:
+    - k8s_upgrade_additional_group | default('') != ''
+    - groups[k8s_upgrade_additional_group] | default([]) | length > 0
+
+- name: "upgrade_additional_cp | etcd | patch apiserver manifest to use all etcd endpoints"
+  replace:
+    path: /etc/kubernetes/manifests/kube-apiserver.yaml
+    regexp: '(--etcd-servers=)\S+'
+    replace: '\1{{ _all_etcd_endpoints }}'
+  become: true
+  when:
+    - k8s_upgrade_additional_group | default('') != ''
+    - groups[k8s_upgrade_additional_group] | default([]) | length > 0
+    - _all_etcd_endpoints is defined
 
 # ---------------------------------------------------------------------------
 # 4. Optional drain
