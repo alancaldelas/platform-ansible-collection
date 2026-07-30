@@ -51,7 +51,10 @@
     - k8s_node_role == 'master'
 
 - name: Install CNI Plugin
-  include_tasks: cni_install.yml
+  include_tasks:
+    file: cni_install.yml
+    apply:
+      tags: ['cni']
   when:
     - k8s_install_cni | default(true)
     - k8s_node_role == 'master'
