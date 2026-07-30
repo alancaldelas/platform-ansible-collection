@@ -2,6 +2,10 @@
 # CNI Plugin Installation Tasks
 # Installs and configures Container Network Interface plugins for Kubernetes
 
+- name: Gather facts when missing (e.g. tag-filtered runs skip play gathering)
+  setup:
+  when: ansible_facts['default_ipv4'] is not defined
+
 - name: Set CNI plugin facts
   set_fact:
     cni_manifests:
@@ -150,8 +154,20 @@
     - k8s_cni_plugin == 'cilium'
     - cni_check.stdout == ""
 
+- name: Install Gateway API CRDs (standard channel)
+  command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f
+    https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version }}/standard-install.yaml
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+    - cilium_gateway_api_enabled
+  register: gateway_api_crds
+
 - name: Install Cilium CNI using CLI
-  command: /usr/local/bin/cilium install --version {{ cilium_version }}
+  command: >-
+    /usr/local/bin/cilium install --version {{ cilium_version }}
+    {{ cilium_gateway_api_flags if cilium_gateway_api_enabled else '' }}
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
   when:
@@ -159,6 +175,65 @@
     - k8s_cni_plugin == 'cilium'
     - cni_check.stdout == ""
   register: cilium_install
+
+- name: Check whether Gateway API is enabled on existing Cilium
+  command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+    get configmap cilium-config -o jsonpath={.data.enable-gateway-api}
+  changed_when: false
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+    - cni_check.stdout != ""
+    - cilium_gateway_api_enabled
+  register: cilium_gw_check
+
+- name: Check whether Envoy retains NET_BIND_SERVICE for privileged ports
+  command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+    get daemonset cilium-envoy -o jsonpath={.spec.template.spec.containers[0].securityContext.capabilities.add}
+  changed_when: false
+  failed_when: false
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+    - cni_check.stdout != ""
+    - cilium_gateway_api_enabled
+  register: cilium_envoy_cap_check
+
+- name: Enable Gateway API on existing Cilium installation
+  command: >-
+    /usr/local/bin/cilium upgrade --version {{ cilium_version }}
+    {{ cilium_gateway_api_flags }}
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+    - cni_check.stdout != ""
+    - cilium_gateway_api_enabled
+    - (cilium_gw_check.stdout != "true") or
+      ("NET_BIND_SERVICE" not in cilium_envoy_cap_check.stdout | default(""))
+  register: cilium_gateway_upgrade
+
+# Cilium reads enable-gateway-api and kube-proxy-replacement from its
+# ConfigMap at startup only; a helm values change does not restart pods,
+# so the operator (which hosts the gateway controller) and the agents must
+# be bounced for the new config to take effect.
+- name: Restart Cilium components to pick up Gateway API config
+  command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+    rollout restart {{ item }}
+  loop:
+    - deployment/cilium-operator
+    - daemonset/cilium
+  when: cilium_gateway_upgrade.changed | default(false)
+
+- name: Wait for Cilium to be ready after Gateway API enablement
+  command: /usr/local/bin/cilium status --wait
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: cilium_gateway_upgrade.changed | default(false)
 
 - name: Clean up Cilium CLI tarball
   file:

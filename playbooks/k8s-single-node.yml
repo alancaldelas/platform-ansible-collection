@@ -55,6 +55,7 @@
     k8s_master_group: k8s_masters
     k8s_cni_plugin: cilium
     k8s_install_cni: true
+    cilium_gateway_api_enabled: true
     k8s_pod_subnet: "10.244.0.0/16"
     k8s_service_subnet: "10.96.0.0/12"
     kubernetes_version: "1.36.2"
