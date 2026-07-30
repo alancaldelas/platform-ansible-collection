@@ -35,7 +35,7 @@
     k8s_install_cni: false
     k8s_pod_subnet: "10.244.0.0/16"
     k8s_service_subnet: "10.96.0.0/12"
-    kubernetes_version: "1.33.11"
+    kubernetes_version: "1.36.2"
 
   roles:
     - alancaldelas.kubernetes_baremetal.k8s

@@ -28,6 +28,14 @@ Deploys Kubernetes clusters using kubeadm with:
 - Binary or source installation
 - CNI plugin deployment (Calico, Flannel, Weave, Cilium)
 
+### k8s_upgrade
+Performs safe, gated in-place minor version upgrades of single-node kubeadm clusters with:
+- Pre-flight checks (version enforcement, cluster health, deprecated API detection, flag audit)
+- Mandatory etcd snapshot and PKI backup before any changes
+- Strictly ordered kubeadm upgrade apply, kubelet/kubectl update, and post-upgrade verification
+
+[Documentation](roles/k8s_upgrade/README.md)
+
 ### common_prereqs
 Common system prerequisites and configuration tasks.
 
