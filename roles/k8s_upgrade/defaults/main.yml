@@ -22,7 +22,7 @@ k8s_upgrade_target_version: ""  # Full version for kubeadm apply, e.g. "1.34.0"
 k8s_upgrade_use_pluto: true
 k8s_upgrade_pluto_version: "5.21.0"
 k8s_upgrade_pluto_install_dir: "/usr/local/bin"
-k8s_upgrade_arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}"
+k8s_upgrade_arch: "{{ 'amd64' if ansible_facts['architecture'] == 'x86_64' else 'arm64' }}"
 
 # ---------------------------------------------------------------------------
 # etcd snapshot configuration

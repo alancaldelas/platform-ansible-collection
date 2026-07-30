@@ -20,7 +20,7 @@
 
 - name: "snapshot | set timestamp fact"
   set_fact:
-    _snapshot_ts: "{{ ansible_date_time.iso8601_basic_short }}"
+    _snapshot_ts: "{{ ansible_facts['date_time']['iso8601_basic_short'] }}"
 
 - name: "snapshot | ensure snapshot directory exists with restricted permissions"
   file:

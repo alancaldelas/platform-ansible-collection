@@ -1,0 +1,59 @@
+---
+# Resume: join fedora-node-3 as the third control plane node.
+# fedora-node-1 and fedora-node-2 are already in the cluster.
+
+- name: "Join fedora-node-3 as additional control plane"
+  hosts: fedora-node-3
+  become: true
+  gather_facts: true
+
+  vars:
+    k8s_node_role: control_plane_join
+    k8s_ha_enabled: true
+    k8s_master_group: k8s_masters
+    k8s_control_plane_endpoint: "10.216.189.10:6443"
+    k8s_install_cni: false
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    kubernetes_version: "1.35.3"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+- name: "Verify final cluster state"
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: "verify | show all cluster nodes"
+      command: kubectl get nodes -o wide
+      register: _nodes
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | display nodes"
+      debug:
+        var: _nodes.stdout_lines
+
+    - name: "verify | check etcd cluster health"
+      shell: |
+        ETCD_POD=$(kubectl get pod -n kube-system -l component=etcd \
+          -o jsonpath='{.items[0].metadata.name}')
+        kubectl exec -n kube-system $ETCD_POD -- etcdctl endpoint health \
+          --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+          --cert=/etc/kubernetes/pki/etcd/peer.crt \
+          --key=/etc/kubernetes/pki/etcd/peer.key \
+          --endpoints=https://127.0.0.1:2379 \
+          --cluster
+      register: _etcd_health
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+        ETCDCTL_API: "3"
+
+    - name: "verify | show etcd health"
+      debug:
+        var: _etcd_health.stdout_lines

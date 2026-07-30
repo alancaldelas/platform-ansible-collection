@@ -69,7 +69,7 @@
 - name: "cp_join | assert primary master facts are available"
   assert:
     that:
-      - k8s_control_plane_endpoint | length > 0 or hostvars[groups[k8s_master_group][0]]['ansible_default_ipv4'] is defined
+      - k8s_control_plane_endpoint | length > 0 or hostvars[groups[k8s_master_group][0]]['ansible_facts']['default_ipv4'] is defined
     fail_msg: >
       Facts for the primary master '{{ groups[k8s_master_group][0] }}' are not
       available and k8s_control_plane_endpoint is not set.
@@ -187,10 +187,11 @@
 
 - name: "cp_join | wait for node to become Ready"
   command: >
-    kubectl get node {{ ansible_hostname }}
+    kubectl get node {{ ansible_facts['nodename'] }}
+    --request-timeout=10s
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
   register: _cp_ready
-  until: _cp_ready.stdout == "True"
+  until: _cp_ready.rc == 0 and _cp_ready.stdout == "True"
   retries: 24
   delay: 10
   changed_when: false
@@ -201,7 +202,8 @@
 
 - name: "cp_join | verify node has control-plane role label"
   command: >
-    kubectl get node {{ ansible_hostname }}
+    kubectl get node {{ ansible_facts['nodename'] }}
+    --request-timeout=10s
     -o jsonpath='{.metadata.labels}'
   register: _cp_labels
   changed_when: false
@@ -215,10 +217,10 @@
     that:
       - '"node-role.kubernetes.io/control-plane" in _cp_labels.stdout'
     fail_msg: >
-      Node {{ ansible_hostname }} joined but does not have the
+      Node {{ ansible_facts['nodename'] }} joined but does not have the
       node-role.kubernetes.io/control-plane label. Check kubeadm join output
       above for errors.
-    success_msg: "Node {{ ansible_hostname }} is a control plane member and is Ready."
+    success_msg: "Node {{ ansible_facts['nodename'] }} is a control plane member and is Ready."
 
 # ---------------------------------------------------------------------------
 # 8. Verify primary master can reach this node's kubelet port (10250)
@@ -226,7 +228,7 @@
 
 - name: "cp_join | verify primary master can reach this node kubelet port (10250)"
   wait_for:
-    host: "{{ ansible_default_ipv4.address }}"
+    host: "{{ ansible_facts['default_ipv4']['address'] }}"
     port: 10250
     timeout: 30
     state: started
@@ -236,5 +238,5 @@
 - name: "cp_join | confirm kubelet connectivity"
   debug:
     msg: >
-      Control plane node {{ ansible_hostname }} successfully joined the HA cluster
+      Control plane node {{ ansible_facts['nodename'] }} successfully joined the HA cluster
       and is reachable from the primary master on port 10250.

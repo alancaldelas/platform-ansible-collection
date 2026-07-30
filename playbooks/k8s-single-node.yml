@@ -1,0 +1,150 @@
+---
+# Kubernetes Single-Node Deployment
+#
+# Deploys a single-node Kubernetes cluster using kubeadm.
+# The node acts as both control plane and worker (taint removed).
+#
+# Inventory layout:
+#
+#   [k8s_masters]
+#   mynode ansible_host=192.168.1.10 ansible_user=root
+#
+#   [k8s_cluster:children]
+#   k8s_masters
+#
+#   [k8s_cluster:vars]
+#   ansible_become=yes
+#   ansible_python_interpreter=/usr/bin/python3
+#
+# Usage:
+#   ansible-playbook -i inventory/single-node.ini playbooks/k8s-single-node.yml
+
+# ---------------------------------------------------------------------------
+# Phase 0: Pre-install (runtime + k8s packages)
+# ---------------------------------------------------------------------------
+- name: "Single-Node | Phase 0: Pre-install"
+  hosts: k8s_masters
+  become: true
+  gather_facts: true
+  tags: [pre_install]
+
+  vars:
+    k8s_node_role: pre_install
+    k8s_ha_enabled: false
+    k8s_master_group: k8s_masters
+    k8s_install_cni: false
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    kubernetes_version: "1.33.11"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+# ---------------------------------------------------------------------------
+# Phase 1: kubeadm init + CNI
+# ---------------------------------------------------------------------------
+- name: "Single-Node | Phase 1: Initialize cluster"
+  hosts: k8s_masters
+  become: true
+  gather_facts: true
+  tags: [init]
+
+  vars:
+    k8s_node_role: master
+    k8s_ha_enabled: false
+    k8s_master_group: k8s_masters
+    k8s_cni_plugin: cilium
+    k8s_install_cni: true
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    kubernetes_version: "1.36.2"
+    k8s_manage_container_runtime: false  # installed in phase 0
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+# ---------------------------------------------------------------------------
+# Phase 2: Remove control-plane taint so workloads can schedule on this node
+# ---------------------------------------------------------------------------
+- name: "Single-Node | Phase 2: Remove control-plane taint"
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+  tags: [taint]
+
+  tasks:
+    - name: "taint | remove control-plane taint to allow workload scheduling"
+      command: >
+        kubectl taint nodes --all
+        node-role.kubernetes.io/control-plane-
+      register: _taint_result
+      changed_when: "'untainted' in _taint_result.stdout"
+      failed_when:
+        - _taint_result.rc != 0
+        - "'not found' not in _taint_result.stderr"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+# ---------------------------------------------------------------------------
+# Phase 3: Verify
+# ---------------------------------------------------------------------------
+- name: "Single-Node | Phase 3: Verify"
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+  tags: [verify]
+
+  tasks:
+    - name: "verify | wait for node to be Ready"
+      command: >
+        kubectl get nodes
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+      register: _node_states
+      until: _node_states.stdout_lines | map('split', ' ') | map('last') | list | unique == ['True']
+      retries: 30
+      delay: 10
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | display node"
+      command: kubectl get nodes -o wide
+      register: _final_nodes
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | show node state"
+      debug:
+        var: _final_nodes.stdout_lines
+
+    - name: "verify | check etcd health"
+      shell: |
+        ETCD_POD=$(kubectl get pod -n kube-system -l component=etcd -o jsonpath='{.items[0].metadata.name}')
+        kubectl exec -n kube-system $ETCD_POD -- etcdctl endpoint health \
+          --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+          --cert=/etc/kubernetes/pki/etcd/peer.crt \
+          --key=/etc/kubernetes/pki/etcd/peer.key \
+          --endpoints=https://127.0.0.1:2379
+      register: _etcd_health
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+        ETCDCTL_API: "3"
+
+    - name: "verify | show etcd health"
+      debug:
+        var: _etcd_health.stdout_lines
+
+    - name: "verify | deployment complete"
+      debug:
+        msg:
+          - "Single-node cluster deployed successfully."
+          - ""
+          - "To use kubectl from your workstation:"
+          - "  scp {{ ansible_user }}@{{ ansible_host }}:/etc/kubernetes/admin.conf ~/.kube/config"
+          - ""
+          - "Check cluster:"
+          - "  kubectl get nodes -o wide"
+          - "  kubectl get pods -A"

@@ -1,17 +1,33 @@
 ---
+# ---------------------------------------------------------------------------
+# Hostname — set from inventory so every node has a unique, stable name
+# ---------------------------------------------------------------------------
+- name: Set hostname from inventory
+  hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Refresh facts after hostname change
+  setup:
+    gather_subset:
+      - network
+      - hardware
+
+# ---------------------------------------------------------------------------
+# Hardware / OS validation
+# ---------------------------------------------------------------------------
 - name: Validate min CPU requirement for Kubernetes
   assert:
     that:
-      - ansible_processor_vcpus >= k8s_min_cpu_cores
-    fail_msg: "System has {{ ansible_processor_vcpus }} CPU cores, but Kubernetes requires at least {{ k8s_min_cpu_cores }} cores"
-    success_msg: "CPU requirement satisfied: {{ ansible_processor_vcpus }} cores available"
+      - ansible_facts['processor_vcpus'] >= k8s_min_cpu_cores
+    fail_msg: "System has {{ ansible_facts['processor_vcpus'] }} CPU cores, but Kubernetes requires at least {{ k8s_min_cpu_cores }} cores"
+    success_msg: "CPU requirement satisfied: {{ ansible_facts['processor_vcpus'] }} cores available"
 
 - name: Validate min memory requirements for Kubernetes
   assert:
     that:
-      - ansible_memtotal_mb >= k8s_min_memory_mb
-    fail_msg: "System has {{ ansible_memtotal_mb }}MB RAM, but Kubernetes requires at least {{ k8s_min_memory_mb }}MB"
-    success_msg: "Memory requirement satisfied: {{ ansible_memtotal_mb }}MB available"
+      - ansible_facts['memtotal_mb'] >= k8s_min_memory_mb
+    fail_msg: "System has {{ ansible_facts['memtotal_mb'] }}MB RAM, but Kubernetes requires at least {{ k8s_min_memory_mb }}MB"
+    success_msg: "Memory requirement satisfied: {{ ansible_facts['memtotal_mb'] }}MB available"
 
 - name: Validate disk space
   assert:
@@ -19,7 +35,7 @@
       - item.size_available >= k8s_min_disk_space_gb * 1024 * 1024 * 1024
     fail_msg: "Insufficient disk space on {{ item.mount }}. Available: {{ (item.size_available / 1024 / 1024 / 1024) | round(1) }}GB, Required: {{ k8s_min_disk_space_gb }}GB"
     success_msg: "Disk space requirement satisfied on {{ item.mount }}: {{ (item.size_available / 1024 / 1024 / 1024) | round(1) }}GB available"
-  with_items: "{{ ansible_mounts }}"
+  with_items: "{{ ansible_facts['mounts'] }}"
   when: item.mount in k8s_required_mount_points
 
 - name: Check if required kernel modules are available
@@ -120,13 +136,13 @@
 - name: Check if ports are available
   wait_for:
     port: "{{ item }}"
-    host: "{{ ansible_default_ipv4.address }}"
+    host: "{{ ansible_facts['default_ipv4']['address'] }}"
     timeout: 1
     state: stopped
   register: port_check
   failed_when: false
   changed_when: false
-  loop: "{{ k8s_required_ports }}"
+  loop: "{{ k8s_required_ports if k8s_node_role in ['master', 'control_plane_join'] else k8s_worker_required_ports }}"
 
 - name: Validate required ports are not in use
   assert:
@@ -135,6 +151,200 @@
     fail_msg: "Required port {{ item.item }} is already in use"
     success_msg: "Port {{ item.item }} is available"
   loop: "{{ port_check.results }}"
+
+# ---------------------------------------------------------------------------
+# HA control plane assertions
+# ---------------------------------------------------------------------------
+
+- name: "ha | assert k8s_control_plane_endpoint is set for HA deployments"
+  assert:
+    that:
+      - k8s_control_plane_endpoint | length > 0
+    fail_msg: >
+      k8s_ha_enabled is true but k8s_control_plane_endpoint is not set.
+      HA control plane requires a load balancer VIP or DNS name in front of
+      all control plane nodes so that workers and additional control plane
+      nodes have a stable endpoint to join.
+      Set k8s_control_plane_endpoint to e.g. "k8s-api.example.com:6443".
+    success_msg: "HA control plane endpoint: {{ k8s_control_plane_endpoint }}"
+  when:
+    - k8s_ha_enabled | default(false)
+    - k8s_node_role in ['master', 'control_plane_join']
+
+- name: "ha | assert k8s_ha_enabled is true when joining as control_plane_join"
+  assert:
+    that:
+      - k8s_ha_enabled | default(false)
+    fail_msg: >
+      k8s_node_role is 'control_plane_join' but k8s_ha_enabled is false.
+      Set k8s_ha_enabled: true in your play vars so that the primary master
+      runs kubeadm init --upload-certs and the certificate key is available
+      for additional control plane nodes to join.
+  when: k8s_node_role == 'control_plane_join'
+
+# ---------------------------------------------------------------------------
+# Multi-node pre-flight checks
+# All blocks below are gated by k8s_multinode_checks so they can be
+# disabled if needed (e.g. during local testing with a single play host).
+# ---------------------------------------------------------------------------
+
+# --- Unique hostnames ---
+
+- name: "multinode | collect hostnames from all nodes in this play"
+  set_fact:
+    _all_play_hostnames: >-
+      {{
+        ansible_play_hosts
+        | map('extract', hostvars, ['ansible_facts', 'nodename'])
+        | select('defined')
+        | list
+      }}
+  when: k8s_multinode_checks | default(true)
+
+- name: "multinode | assert this node's hostname is unique in the cluster"
+  assert:
+    that:
+      - _all_play_hostnames | select('equalto', ansible_facts['nodename']) | list | length == 1
+    fail_msg: >
+      Hostname '{{ ansible_facts['nodename'] }}' appears on more than one node.
+      Kubernetes uses the hostname to uniquely identify nodes — duplicate
+      hostnames will cause nodes to overwrite each other in the cluster.
+      Set a unique hostname on each node before running this playbook.
+    success_msg: "Hostname '{{ ansible_facts['nodename'] }}' is unique among cluster nodes."
+  when: k8s_multinode_checks | default(true)
+
+# --- Unique IPs ---
+
+- name: "multinode | collect IPs from all nodes in this play"
+  set_fact:
+    _all_play_ips: >-
+      {{
+        ansible_play_hosts
+        | map('extract', hostvars, ['ansible_facts', 'default_ipv4', 'address'])
+        | select('defined')
+        | list
+      }}
+  when: k8s_multinode_checks | default(true)
+
+- name: "multinode | assert this node's IP is unique in the cluster"
+  assert:
+    that:
+      - _all_play_ips | select('equalto', ansible_facts['default_ipv4']['address']) | list | length == 1
+    fail_msg: >
+      IP address '{{ ansible_facts['default_ipv4']['address'] }}' appears on more than one
+      node. Each cluster node must have a distinct IP address.
+    success_msg: "IP '{{ ansible_facts['default_ipv4']['address'] }}' is unique among cluster nodes."
+  when: k8s_multinode_checks | default(true)
+
+# --- openssl available on master (required to compute CA cert hash for join) ---
+
+- name: "multinode | verify openssl is available on master"
+  command: openssl version
+  register: _openssl_check
+  changed_when: false
+  failed_when: _openssl_check.rc != 0
+  when:
+    - k8s_multinode_checks | default(true)
+    - k8s_node_role == 'master'
+
+# --- Worker → master connectivity ---
+# By the time workers are validated, the master play has already completed
+# and the API server is running on port 6443.
+
+- name: "multinode | check node can reach master API server (port 6443)"
+  wait_for:
+    host: >-
+      {{
+        k8s_control_plane_endpoint.split(':')[0]
+        if k8s_control_plane_endpoint | length > 0
+        else hostvars[groups[k8s_master_group][0]]['ansible_facts']['default_ipv4']['address']
+      }}
+    port: 6443
+    timeout: 10
+    state: started
+  when:
+    - k8s_multinode_checks | default(true)
+    - k8s_node_role in ['worker', 'control_plane_join']
+    - k8s_master_group in groups
+    - groups[k8s_master_group] | length > 0
+
+- name: "multinode | check node can reach master etcd peer port (port 2380)"
+  wait_for:
+    host: >-
+      {{
+        k8s_control_plane_endpoint.split(':')[0]
+        if k8s_control_plane_endpoint | length > 0
+        else hostvars[groups[k8s_master_group][0]]['ansible_facts']['default_ipv4']['address']
+      }}
+    port: 2380
+    timeout: 10
+    state: started
+  when:
+    - k8s_multinode_checks | default(true)
+    - k8s_node_role in ['worker', 'control_plane_join']
+    - k8s_master_group in groups
+    - groups[k8s_master_group] | length > 0
+    - k8s_control_plane_endpoint | length > 0 or hostvars[groups[k8s_master_group][0]]['ansible_facts']['default_ipv4'] is defined
+
+# --- DNS resolution between nodes ---
+# Failure is a warning only — many valid environments use IP-based
+# addressing and do not require hostname resolution between nodes.
+# CoreDNS handles in-cluster DNS; this checks the host OS resolver.
+
+- name: "multinode | check this node can resolve the master's hostname"
+  command: "getent hosts {{ hostvars[groups[k8s_master_group][0]]['ansible_facts']['nodename'] }}"
+  register: _dns_master_check
+  changed_when: false
+  failed_when: false
+  when:
+    - k8s_multinode_checks | default(true)
+    - k8s_node_role in ['worker', 'control_plane_join']
+    - k8s_master_group in groups
+    - groups[k8s_master_group] | length > 0
+    - hostvars[groups[k8s_master_group][0]]['ansible_facts']['nodename'] is defined
+
+- name: "multinode | warn if master hostname does not resolve"
+  debug:
+    msg: >
+      WARNING: This node cannot resolve the master hostname
+      '{{ hostvars[groups[k8s_master_group][0]]['ansible_facts']['nodename'] }}'.
+      This is not blocking, but may cause issues if any component relies
+      on hostname-based resolution between nodes. Consider adding an
+      /etc/hosts entry or configuring DNS.
+  when:
+    - k8s_multinode_checks | default(true)
+    - k8s_node_role in ['worker', 'control_plane_join']
+    - k8s_master_group in groups
+    - groups[k8s_master_group] | length > 0
+    - hostvars[groups[k8s_master_group][0]]['ansible_facts']['nodename'] is defined
+    - _dns_master_check.rc != 0
+
+- name: "multinode | check master can resolve each worker's hostname"
+  command: "getent hosts {{ hostvars[item]['ansible_facts']['nodename'] }}"
+  register: _dns_worker_check
+  changed_when: false
+  failed_when: false
+  loop: "{{ ansible_play_hosts | difference(groups[k8s_master_group] | default([])) }}"
+  when:
+    - k8s_multinode_checks | default(true)
+    - k8s_node_role == 'master'
+    - k8s_master_group in groups
+
+- name: "multinode | warn if any worker hostname does not resolve from master"
+  debug:
+    msg: >
+      WARNING: Master cannot resolve worker hostname
+      '{{ hostvars[item.item]['ansible_facts']['nodename'] }}'.
+      Consider adding /etc/hosts entries or configuring DNS.
+  loop: "{{ _dns_worker_check.results | default([]) }}"
+  when:
+    - k8s_multinode_checks | default(true)
+    - k8s_node_role == 'master'
+    - item.rc != 0
+
+# ---------------------------------------------------------------------------
+# End multi-node pre-flight checks
+# ---------------------------------------------------------------------------
 
 - name: Load required kernel modules
   modprobe:
@@ -174,26 +384,26 @@
   package:
     name: "{{ k8s_required_packages_debian }}"
     state: present
-  when: 
-    - ansible_os_family == "Debian"
+  when:
+    - ansible_facts['os_family'] == "Debian"
     - k8s_required_packages_debian is defined
 
 - name: Install required packages for Kubernetes (RHEL/CentOS)
   package:
     name: "{{ k8s_required_packages_rhel }}"
     state: present
-  when: 
-    - ansible_os_family == "RedHat"
+  when:
+    - ansible_facts['os_family'] == "RedHat"
     - k8s_required_packages_rhel is defined
 
 - name: Configure SELinux state
   selinux:
     state: "{{ k8s_selinux_state }}"
     policy: "{{ k8s_selinux_policy }}"
-  when: 
-    - ansible_selinux is defined
+  when:
+    - ansible_facts['selinux'] is defined
     - k8s_selinux_state != "current"
-    - (ansible_selinux.status != k8s_selinux_state or (k8s_selinux_state == "enforcing" and ansible_selinux.mode != "enforcing"))
+    - (ansible_facts['selinux'].status != k8s_selinux_state or (k8s_selinux_state == "enforcing" and ansible_facts['selinux'].mode != "enforcing"))
   notify: reboot system
 
 - name: Install SELinux policy packages for Kubernetes (RHEL/CentOS)
@@ -201,7 +411,7 @@
     name: "{{ k8s_selinux_packages_rhel }}"
     state: present
   when:
-    - ansible_os_family == "RedHat"
+    - ansible_facts['os_family'] == "RedHat"
     - k8s_selinux_state in ["enforcing", "permissive"]
     - k8s_selinux_packages_rhel is defined
 
@@ -212,7 +422,7 @@
     persistent: yes
   loop: "{{ k8s_selinux_booleans }}"
   when:
-    - ansible_selinux is defined
+    - ansible_facts['selinux'] is defined
     - k8s_selinux_state in ["enforcing", "permissive"]
     - k8s_selinux_booleans is defined
 
@@ -227,15 +437,5 @@
     - ufw
   when: k8s_disable_firewall | default(false)
 
-- name: Check if swap is enabled
-  command: swapon --show
-  register: swap_status
-  changed_when: false
-  failed_when: false
-
-- name: Validate swap is disabled
-  assert:
-    that:
-      - swap_status.stdout == ""
-    fail_msg: "Swap is enabled. Kubernetes requires swap to be disabled"
-    success_msg: "Swap is properly disabled"
+# Swap validation is performed in main.yml after the runtime role
+# has had a chance to disable all swap mechanisms (including zram).

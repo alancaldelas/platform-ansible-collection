@@ -52,6 +52,7 @@ k8s_required_endpoints:
 k8s_check_network_connectivity: true
 
 # Required ports that should be available (not in use)
+# Control plane nodes require all of these.
 k8s_required_ports:
   - 6443   # Kubernetes API server
   - 2379   # etcd server client API
@@ -61,12 +62,28 @@ k8s_required_ports:
   - 10252  # kube-controller-manager
   - 10255  # Read-only Kubelet API
 
+# Worker nodes only need kubelet + NodePort range checked.
+k8s_worker_required_ports:
+  - 10250  # Kubelet API
+  - 10255  # Read-only Kubelet API
+
+# Enable multi-node specific pre-flight checks:
+#   - Unique hostname and IP across cluster nodes
+#   - openssl available on master (required to generate CA cert hash for join)
+#   - Worker → master connectivity on ports 6443 and 2380
+#   - DNS resolution warnings between nodes
+#   - Master → worker kubelet port (10250) reachability after join
+# These checks are gated by k8s_node_role and group membership so they
+# are safely ignored on single-node deployments.
+k8s_multinode_checks: true
+
 # Common packages required for Kubernetes
 k8s_required_packages:
   - curl
   - wget
   - ca-certificates
   - gnupg
+  - openssl  # required on master to compute CA cert hash for kubeadm join
 
 # Debian/Ubuntu specific packages
 k8s_required_packages_debian:
@@ -107,16 +124,46 @@ k8s_container_runtime: containerd  # containerd, crio, docker
 k8s_manage_container_runtime: true  # Whether this role should manage container runtime installation
 
 # Node role configuration
-k8s_node_role: worker  # master, worker, etcd
+# master  - initialises the control plane (kubeadm init)
+# worker  - joins an existing cluster (kubeadm join)
+k8s_node_role: master
 
 # Cluster configuration
 k8s_cluster_name: kubernetes
 k8s_pod_subnet: "10.244.0.0/16"
 k8s_service_subnet: "10.96.0.0/12"
 
+# Control plane endpoint - used by workers to reach the API server.
+# For single-node this defaults to the master's IP.
+# For multi-node set this to a load balancer VIP or DNS name so workers
+# do not hard-code a single master IP.
+# REQUIRED when k8s_ha_enabled: true — kubeadm will reject HA init without it.
+# Example: k8s_control_plane_endpoint: "k8s-api.example.com:6443"
+k8s_control_plane_endpoint: ""
+
+# HA control plane configuration.
+# Set to true when deploying multiple control plane nodes (stacked etcd).
+# When true, kubeadm init runs with --upload-certs so additional control
+# plane nodes can pull the PKI via kubeadm join --control-plane.
+# k8s_control_plane_endpoint must also be set (a LB VIP or DNS name).
+k8s_ha_enabled: false
+
+# Ansible group name that contains the PRIMARY control plane node (ran init).
+# Used by workers and additional CP nodes to delegate token/cert generation.
+k8s_master_group: "k8s_masters"
+
+# Ansible group name for ADDITIONAL control plane nodes (control_plane_join).
+# Only used by the HA playbook for documentation/reference — the role itself
+# uses k8s_node_role to determine behaviour on each host.
+k8s_cp_join_group: "k8s_control_planes"
+
 # kubeadm configuration
 k8s_kubeadm_init_extra_args: ""
 k8s_kubeadm_join_extra_args: ""
+
+# Token TTL for the join token generated on the master.
+# Defaults to 1h - long enough for a normal playbook run.
+k8s_join_token_ttl: "1h"
 
 # Feature gates (optional)
 k8s_feature_gates: []

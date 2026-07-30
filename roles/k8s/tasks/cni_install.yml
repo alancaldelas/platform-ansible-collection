@@ -39,7 +39,7 @@
 
 - name: Wait for Kubernetes API to be ready
   wait_for:
-    host: "{{ ansible_default_ipv4.address }}"
+    host: "{{ ansible_facts['default_ipv4']['address'] }}"
     port: 6443
     timeout: 300
   when: k8s_node_role == 'master'

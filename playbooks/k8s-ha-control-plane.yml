@@ -1,0 +1,258 @@
+---
+# Kubernetes HA Control Plane Deployment
+#
+# Deploys a 3-node HA control plane (stacked etcd) + worker nodes.
+# The primary master runs kubeadm init --upload-certs. Additional control
+# plane nodes and workers join via kubeadm join.
+#
+# Architecture:
+#   [Load Balancer / VIP]  <-- k8s_control_plane_endpoint (REQUIRED)
+#        |         |
+#   [master01] [master02] [master03]   <- stacked etcd on each
+#        |         |          |
+#   [worker01] [worker02] ...
+#
+# k8s_control_plane_endpoint is REQUIRED and must point to a load balancer
+# or VIP in front of all control plane nodes. Options:
+#   - HAProxy + keepalived (external LB on dedicated nodes)
+#   - kube-vip (runs as a static pod on control plane nodes)
+#   - Cloud load balancer (AWS NLB, GCP ILB, etc.)
+#   - Hardware load balancer
+#
+# This playbook does NOT configure the load balancer — set it up before
+# running. The endpoint must be reachable on port 6443 from all nodes.
+#
+# Inventory layout:
+#
+#   [k8s_masters]
+#   master01 ansible_host=192.168.1.10 ansible_user=ubuntu
+#
+#   [k8s_control_planes]
+#   master02 ansible_host=192.168.1.11 ansible_user=ubuntu
+#   master03 ansible_host=192.168.1.12 ansible_user=ubuntu
+#
+#   [k8s_workers]
+#   worker01 ansible_host=192.168.1.20 ansible_user=ubuntu
+#   worker02 ansible_host=192.168.1.21 ansible_user=ubuntu
+#
+#   [k8s_cluster:children]
+#   k8s_masters
+#   k8s_control_planes
+#   k8s_workers
+#
+#   [k8s_cluster:vars]
+#   ansible_become=yes
+#
+# Usage:
+#   ansible-playbook -i inventory playbooks/k8s-ha-control-plane.yml
+#
+# Run pre-flight only (read-only):
+#   ansible-playbook -i inventory playbooks/k8s-ha-control-plane.yml \
+#     --tags validation
+
+# ---------------------------------------------------------------------------
+# Phase 0: Pre-install on ALL nodes in parallel
+# Runs validation, container runtime install, and k8s package install
+# simultaneously on every node. kubeadm init/join is gated by k8s_node_role
+# so using 'pre_install' skips all kubeadm steps safely.
+# ---------------------------------------------------------------------------
+- name: "HA Phase 0: Pre-install on all nodes (parallel)"
+  hosts: k8s_cluster
+  become: true
+  gather_facts: true
+  tags: [pre_install]
+
+  vars:
+    k8s_node_role: pre_install
+    k8s_ha_enabled: true
+    k8s_master_group: k8s_masters
+    k8s_install_cni: false
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    kubernetes_version: "1.33.11"
+
+  pre_tasks:
+    - name: "set k8s_control_plane_endpoint from inventory if not provided"
+      set_fact:
+        k8s_control_plane_endpoint: "{{ hostvars[groups['k8s_masters'][0]]['ansible_host'] }}:6443"
+      when: k8s_control_plane_endpoint | default('') | length == 0
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+# ---------------------------------------------------------------------------
+# Phase 1: Deploy the primary control plane node
+# ---------------------------------------------------------------------------
+- name: "HA Phase 1: Deploy primary control plane"
+  hosts: k8s_masters
+  become: true
+  gather_facts: true
+  tags: [primary_cp]
+
+  vars:
+    k8s_node_role: master
+    k8s_ha_enabled: true
+    k8s_master_group: k8s_masters
+    k8s_cni_plugin: cilium
+    k8s_install_cni: true
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    kubernetes_version: "1.33.11"
+    k8s_manage_container_runtime: false  # already installed in phase 0
+
+  pre_tasks:
+    - name: "set k8s_control_plane_endpoint from inventory if not provided"
+      set_fact:
+        k8s_control_plane_endpoint: "{{ hostvars[groups['k8s_masters'][0]]['ansible_host'] }}:6443"
+      when: k8s_control_plane_endpoint | default('') | length == 0
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+# ---------------------------------------------------------------------------
+# Phase 2: Join additional control plane nodes (one at a time)
+# ---------------------------------------------------------------------------
+- name: "HA Phase 2: Join additional control plane nodes"
+  hosts: k8s_control_planes
+  become: true
+  gather_facts: true
+  serial: 1  # Join one at a time — etcd needs to reach quorum between joins
+  tags: [additional_cp]
+
+  vars:
+    k8s_node_role: control_plane_join
+    k8s_ha_enabled: true
+    k8s_master_group: k8s_masters
+    k8s_install_cni: false
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    kubernetes_version: "1.33.11"
+    k8s_manage_container_runtime: false  # already installed in phase 0
+
+  pre_tasks:
+    - name: "set k8s_control_plane_endpoint from inventory if not provided"
+      set_fact:
+        k8s_control_plane_endpoint: "{{ hostvars[groups['k8s_masters'][0]]['ansible_host'] }}:6443"
+      when: k8s_control_plane_endpoint | default('') | length == 0
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+# ---------------------------------------------------------------------------
+# Phase 3: Join worker nodes
+# ---------------------------------------------------------------------------
+- name: "HA Phase 3: Join worker nodes"
+  hosts: k8s_workers
+  become: true
+  gather_facts: true
+  serial: 1
+  tags: [workers]
+
+  vars:
+    k8s_node_role: worker
+    k8s_ha_enabled: true
+    k8s_master_group: k8s_masters
+    k8s_install_cni: false
+    k8s_pod_subnet: "10.244.0.0/16"
+    k8s_service_subnet: "10.96.0.0/12"
+    kubernetes_version: "1.33.11"
+    k8s_manage_container_runtime: false  # already installed in phase 0
+
+  pre_tasks:
+    - name: "set k8s_control_plane_endpoint from inventory if not provided"
+      set_fact:
+        k8s_control_plane_endpoint: "{{ hostvars[groups['k8s_masters'][0]]['ansible_host'] }}:6443"
+      when: k8s_control_plane_endpoint | default('') | length == 0
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+
+# ---------------------------------------------------------------------------
+# Phase 4: Verify cluster
+# ---------------------------------------------------------------------------
+- name: "HA Phase 4: Verify cluster state"
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+  tags: [verify]
+
+  tasks:
+    - name: "verify | wait for all nodes to be Ready"
+      command: >
+        kubectl get nodes
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+      register: _node_states
+      until: _node_states.stdout_lines | map('split', ' ') | map('last') | list | unique == ['True']
+      retries: 30
+      delay: 10
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | confirm control plane node count"
+      command: >
+        kubectl get nodes
+        -l node-role.kubernetes.io/control-plane
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+      register: _cp_nodes
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | assert expected number of control plane nodes are Ready"
+      assert:
+        that:
+          - _cp_nodes.stdout_lines | length >= k8s_expected_cp_count | default(3) | int
+        fail_msg: >
+          Expected at least {{ k8s_expected_cp_count | default(3) }} control plane nodes but found
+          {{ _cp_nodes.stdout_lines | length }}: {{ _cp_nodes.stdout_lines | join(', ') }}
+        success_msg: >
+          HA control plane has {{ _cp_nodes.stdout_lines | length }} nodes:
+          {{ _cp_nodes.stdout_lines | join(', ') }}
+
+    - name: "verify | display all cluster nodes"
+      command: kubectl get nodes -o wide
+      register: _final_nodes
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | show node state"
+      debug:
+        var: _final_nodes.stdout_lines
+
+    - name: "verify | check etcd cluster health"
+      command: >
+        kubectl exec -n kube-system
+        $(kubectl get pod -n kube-system -l component=etcd -o jsonpath='{.items[0].metadata.name}' --kubeconfig=/etc/kubernetes/admin.conf)
+        -- etcdctl endpoint health
+        --cacert=/etc/kubernetes/pki/etcd/ca.crt
+        --cert=/etc/kubernetes/pki/etcd/peer.crt
+        --key=/etc/kubernetes/pki/etcd/peer.key
+        --endpoints=https://127.0.0.1:2379
+        --cluster
+      register: _etcd_health
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+        ETCDCTL_API: "3"
+
+    - name: "verify | show etcd cluster health"
+      debug:
+        var: _etcd_health.stdout_lines
+
+    - name: "verify | display post-deployment instructions"
+      debug:
+        msg:
+          - "HA control plane deployment complete."
+          - ""
+          - "Control plane nodes: {{ _cp_nodes.stdout_lines | join(', ') }}"
+          - ""
+          - "To use kubectl from your workstation:"
+          - "  scp {{ ansible_user }}@{{ ansible_host }}:/etc/kubernetes/admin.conf ~/.kube/config"
+          - "  Update the server: field in ~/.kube/config to {{ k8s_control_plane_endpoint }}"
+          - ""
+          - "Check cluster health:"
+          - "  kubectl get nodes -o wide"
+          - "  kubectl get pods -A"

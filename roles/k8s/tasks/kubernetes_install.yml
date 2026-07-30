@@ -4,9 +4,9 @@
 - name: Get OS Info
   debug:
     msg: |
-      Operating System: {{ ansible_distribution }}
-      OS Family: {{ ansible_os_family }}
-      Kernel: {{ ansible_kernel }}
+      Operating System: {{ ansible_facts['distribution'] }}
+      OS Family: {{ ansible_facts['os_family'] }}
+      Kernel: {{ ansible_facts['kernel'] }}
 - name: Perform tasks for Debian-based
   block:
     - name: Update
@@ -29,7 +29,7 @@
         state: present
         filename: kubernetes
       become: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: Perform tasks for RHEL-based
   block:
@@ -37,28 +37,28 @@
       yum:
         update_cache: yes
       become: true
-      when: ansible_pkg_mgr == 'yum'
-    
+      when: ansible_facts['pkg_mgr'] == 'yum'
+
     - name: Update (DNF)
       dnf:
         update_cache: yes
       become: true
-      when: ansible_pkg_mgr == 'dnf'
-    
+      when: ansible_facts['pkg_mgr'] in ['dnf', 'dnf5']
+
     - name: Install Pre-reqs (YUM)
       yum:
         name: "{{ k8s_required_packages + k8s_required_packages_rhel }}"
         state: present
       become: true
-      when: ansible_pkg_mgr == 'yum'
-    
+      when: ansible_facts['pkg_mgr'] == 'yum'
+
     - name: Install Pre-reqs (DNF)
       dnf:
         name: "{{ k8s_required_packages + k8s_required_packages_rhel }}"
         state: present
       become: true
-      when: ansible_pkg_mgr == 'dnf'
-    
+      when: ansible_facts['pkg_mgr'] in ['dnf', 'dnf5']
+
     - name: Add Kubernetes Repository
       yum_repository:
         name: kubernetes
@@ -68,7 +68,7 @@
         gpgkey: https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version.split('.')[0] }}.{{ kubernetes_version.split('.')[1] }}/rpm/repodata/repomd.xml.key
         enabled: yes
       become: true
-  when: ansible_os_family == "RedHat"
+  when: ansible_facts['os_family'] == "RedHat"
 
 # Tasks for installing Kubeadm
 - name: Install Packages (Debian)
@@ -80,7 +80,7 @@
     state: present
     update_cache: yes
   become: true
-  when: ansible_os_family == 'Debian'
+  when: ansible_facts['os_family'] == 'Debian'
 
 - name: Install Packages (RedHat - YUM)
   yum:
@@ -91,7 +91,7 @@
     state: present
     update_cache: yes
   become: true
-  when: ansible_os_family == 'RedHat' and ansible_pkg_mgr == 'yum'
+  when: ansible_facts['os_family'] == 'RedHat' and ansible_facts['pkg_mgr'] == 'yum'
 
 - name: Install Packages (RedHat - DNF)
   dnf:
@@ -102,32 +102,77 @@
     state: present
     update_cache: yes
   become: true
-  when: ansible_os_family == 'RedHat' and ansible_pkg_mgr == 'dnf'
+  when: ansible_facts['os_family'] == 'RedHat' and ansible_facts['pkg_mgr'] in ['dnf', 'dnf5']
 
 
 - name: Enable & start kubelet
   shell: systemctl enable --now kubelet
   become: true
 
-- name: Add Init & Cluster & Kubelet Config
+# ---------------------------------------------------------------------------
+# Control plane (master) path
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Control plane (master) path
+# ---------------------------------------------------------------------------
+
+- name: Add kubeadm init config
   template:
     src: kubeadm-config.yaml.j2
     dest: /root/kubeadm-config.yaml
     owner: root
     group: root
-    mode: 0644
+    mode: '0644'
+  when: k8s_node_role == 'master'
 
-- name: Install Control Plane
-  shell: |
-    kubeadm init --config=/root/kubeadm-config.yaml
+- name: Initialize control plane (standard single-master)
+  shell: kubeadm init --config=/root/kubeadm-config.yaml
+  become: true
+  register: _kubeadm_init
+  when:
+    - k8s_node_role == 'master'
+    - not k8s_ha_enabled | default(false)
 
-# Uninstall script template not yet created - commented out
-#- name: Add uninstall script
-#  template:
-#    src: uninstall.sh.j2
-#    dest: /root/uninstall.sh
-#    owner: root
-#    group: root
-#    mode: 0755
+- name: Initialize control plane (HA — uploads certificates for additional control plane nodes)
+  shell: kubeadm init --config=/root/kubeadm-config.yaml --upload-certs
+  become: true
+  register: _kubeadm_init_ha
+  when:
+    - k8s_node_role == 'master'
+    - k8s_ha_enabled | default(false)
+
+- name: Create .kube directory for root
+  file:
+    path: /root/.kube
+    state: directory
+    mode: '0700'
+  when: k8s_node_role == 'master'
+
+- name: Copy admin.conf to root .kube/config
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0600'
+  when: k8s_node_role == 'master'
+
+# ---------------------------------------------------------------------------
+# Worker path
+# ---------------------------------------------------------------------------
+
+- name: Join worker node to cluster
+  include_tasks: kubernetes_join.yml
+  when: k8s_node_role == 'worker'
+
+# ---------------------------------------------------------------------------
+# Additional control plane (HA) path
+# ---------------------------------------------------------------------------
+
+- name: Join additional control plane node
+  include_tasks: kubernetes_cp_join.yml
+  when: k8s_node_role == 'control_plane_join'
 
 

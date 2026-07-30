@@ -16,6 +16,8 @@ Quick command reference for all sample playbooks in this collection.
 | Playbook | Description | Requirements |
 |----------|-------------|--------------|
 | `k8s-single-node-basic.yml` | Basic dev/test cluster | 2 CPU, 2GB RAM, 20GB disk |
+| `k8s-multi-node.yml` | Multi-node (1 master + N workers) | 2 CPU, 2GB RAM, 20GB disk per node |
+| `k8s-ha-control-plane.yml` | HA control plane (3 CP nodes + workers) | 2 CPU, 2GB RAM, 20GB disk per node + LB |
 | `k8s-production-validated.yml` | Production cluster with validation | 4 CPU, 8GB RAM, 100GB disk |
 | `k8s-from-source.yml` | Build K8s from source | 4 CPU, 8GB RAM, 50GB disk |
 
@@ -35,6 +37,7 @@ Quick command reference for all sample playbooks in this collection.
 | `full-stack-deployment.yml` | Runtime + K8s with phases | `ansible-playbook -i inventory playbooks/full-stack-deployment.yml` |
 | `hardware-validation.yml` | Pre-deployment validation | `ansible-playbook -i inventory playbooks/hardware-validation.yml` |
 | `airgap-offline-installation.yml` | Air-gapped/offline install | `ansible-playbook -i inventory playbooks/airgap-offline-installation.yml` |
+| `k8s-upgrade-1.33-to-1.34.yml` | Upgrade cluster 1.33 → 1.34 | `ansible-playbook -i inventory playbooks/k8s-upgrade-1.33-to-1.34.yml` |
 
 ## Common Inventory Template
 
@@ -80,6 +83,19 @@ ansible-playbook -i inventory playbooks/full-stack-deployment.yml --tags kuberne
 ansible-playbook -i inventory playbooks/full-stack-deployment.yml --tags verify
 ```
 
+## Tags for Kubernetes Upgrade
+
+```bash
+# Pre-flight checks only (read-only, safe at any time)
+ansible-playbook -i inventory playbooks/k8s-upgrade-1.33-to-1.34.yml --tags preflight
+
+# Snapshot only (etcd + PKI backup)
+ansible-playbook -i inventory playbooks/k8s-upgrade-1.33-to-1.34.yml --tags snapshot
+
+# Full upgrade (all phases)
+ansible-playbook -i inventory playbooks/k8s-upgrade-1.33-to-1.34.yml
+```
+
 ## Decision Tree
 
 ```
@@ -93,8 +109,14 @@ What do you want to do?
 │     └─ Podman (daemonless) → runtime-podman.yml
 │
 ├─ Install Kubernetes
-│  ├─ First time / Learning
+│  ├─ First time / Learning (single node)
 │  │  └─ k8s-single-node-basic.yml
+│  │
+│  ├─ Multi-node cluster (1 master + workers)
+│  │  └─ k8s-multi-node.yml
+│  │
+│  ├─ HA control plane (3 CP nodes + workers)
+│  │  └─ k8s-ha-control-plane.yml
 │  │
 │  ├─ Production deployment
 │  │  └─ k8s-production-validated.yml
@@ -114,8 +136,11 @@ What do you want to do?
 ├─ Validate hardware first
 │  └─ hardware-validation.yml
 │
-└─ Air-gapped / Offline environment
-   └─ airgap-offline-installation.yml
+├─ Air-gapped / Offline environment
+│  └─ airgap-offline-installation.yml
+│
+└─ Upgrade existing cluster (minor version)
+   └─ k8s-upgrade-1.33-to-1.34.yml
 ```
 
 ## Verification Commands

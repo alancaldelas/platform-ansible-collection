@@ -41,7 +41,7 @@
         filename: kubernetes
         update_cache: true
       become: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_control | repo | add target version yum/dnf repository (RedHat)"
   yum_repository:
@@ -52,7 +52,7 @@
     gpgkey: "https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/rpm/repodata/repomd.xml.key"
     enabled: true
   become: true
-  when: ansible_os_family == "RedHat"
+  when: ansible_facts['os_family'] == "RedHat"
 
 # ---------------------------------------------------------------------------
 # 2. Upgrade kubeadm first
@@ -62,7 +62,7 @@
   command: apt-mark unhold kubeadm
   become: true
   changed_when: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_control | kubeadm | install target version (Debian)"
   apt:
@@ -71,13 +71,13 @@
     update_cache: false
     allow_downgrade: false
   become: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_control | kubeadm | hold package (Debian)"
   command: apt-mark hold kubeadm
   become: true
   changed_when: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_control | kubeadm | install target version (RedHat yum)"
   yum:
@@ -86,8 +86,8 @@
     update_cache: false
   become: true
   when:
-    - ansible_os_family == "RedHat"
-    - ansible_pkg_mgr == "yum"
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] == "yum"
 
 - name: "upgrade_control | kubeadm | install target version (RedHat dnf)"
   dnf:
@@ -96,8 +96,8 @@
     update_cache: false
   become: true
   when:
-    - ansible_os_family == "RedHat"
-    - ansible_pkg_mgr in ["dnf", "dnf5"]
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] in ["dnf", "dnf5"]
 
 # ---------------------------------------------------------------------------
 # 3. kubeadm upgrade plan (informational)
@@ -171,7 +171,7 @@
 # ---------------------------------------------------------------------------
 
 - name: "upgrade_control | drain | cordon node"
-  command: kubectl cordon {{ ansible_hostname }}
+  command: kubectl cordon {{ ansible_facts['nodename'] }}
   changed_when: true
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
@@ -179,7 +179,7 @@
 
 - name: "upgrade_control | drain | drain node"
   command: >
-    kubectl drain {{ ansible_hostname }}
+    kubectl drain {{ ansible_facts['nodename'] }}
     --ignore-daemonsets
     --delete-emptydir-data
     --timeout={{ k8s_upgrade_drain_timeout }}
@@ -197,7 +197,7 @@
   command: apt-mark unhold kubelet kubectl
   become: true
   changed_when: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_control | kubelet | install target versions (Debian)"
   apt:
@@ -208,13 +208,13 @@
     update_cache: false
     allow_downgrade: false
   become: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_control | kubelet | hold packages (Debian)"
   command: apt-mark hold kubelet kubectl
   become: true
   changed_when: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_control | kubelet | install target versions (RedHat yum)"
   yum:
@@ -224,8 +224,8 @@
     state: present
   become: true
   when:
-    - ansible_os_family == "RedHat"
-    - ansible_pkg_mgr == "yum"
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] == "yum"
 
 - name: "upgrade_control | kubelet | install target versions (RedHat dnf)"
   dnf:
@@ -235,8 +235,8 @@
     state: present
   become: true
   when:
-    - ansible_os_family == "RedHat"
-    - ansible_pkg_mgr in ["dnf", "dnf5"]
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] in ["dnf", "dnf5"]
 
 # ---------------------------------------------------------------------------
 # 7. Restart kubelet
@@ -255,7 +255,7 @@
 # ---------------------------------------------------------------------------
 
 - name: "upgrade_control | drain | uncordon node"
-  command: kubectl uncordon {{ ansible_hostname }}
+  command: kubectl uncordon {{ ansible_facts['nodename'] }}
   changed_when: true
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
@@ -267,7 +267,7 @@
 
 - name: "upgrade_control | verify | wait for node to return to Ready"
   command: >
-    kubectl get node {{ ansible_hostname }}
+    kubectl get node {{ ansible_facts['nodename'] }}
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
   register: _node_ready_check
   until: _node_ready_check.stdout == "True"
@@ -328,5 +328,5 @@
       - "Control plane upgrade complete."
       - "  From : {{ k8s_upgrade_from }}"
       - "  To   : {{ k8s_upgrade_target_version }}"
-      - "  Node : {{ ansible_hostname }}"
+      - "  Node : {{ ansible_facts['nodename'] }}"
       - "Snapshot retained at: {{ k8s_upgrade_snapshot_dir }}/"

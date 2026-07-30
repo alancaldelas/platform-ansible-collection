@@ -1,0 +1,162 @@
+---
+# Kubernetes HA Control Plane Upgrade: 1.35 -> 1.36
+#
+# Upgrades a 3-node HA kubeadm cluster from Kubernetes 1.35 to 1.36.
+#
+# Phases (in strict order):
+#   1. Pre-flight  - version check, cluster health, deprecated APIs, flag audit (primary only)
+#   2. Snapshot    - etcd snapshot + PKI archive on primary (blocks all mutation if it fails)
+#   3. Upgrade primary   - kubeadm upgrade apply on the primary control plane
+#   4. Upgrade additional - kubeadm upgrade node on each additional control plane (serial)
+#   5. Verify      - confirm all nodes Ready and on target version
+#
+# Usage:
+#   # Full upgrade:
+#   ansible-playbook -i inventory/ha-test.ini playbooks/k8s-upgrade-1.35-to-1.36.yml
+#
+#   # Pre-flight checks only (read-only):
+#   ansible-playbook -i inventory/ha-test.ini playbooks/k8s-upgrade-1.35-to-1.36.yml --tags preflight
+#
+#   # Snapshot only:
+#   ansible-playbook -i inventory/ha-test.ini playbooks/k8s-upgrade-1.35-to-1.36.yml --tags snapshot
+#
+# NOTE: Update k8s_upgrade_target_version to the desired 1.36.x patch once
+# available in the pkgs.k8s.io repository.
+
+# ---------------------------------------------------------------------------
+# Play 1: Pre-flight + Snapshot + Primary control plane upgrade
+# ---------------------------------------------------------------------------
+- name: "HA Upgrade 1.35->1.36 | Phase 1-3: Preflight, snapshot, primary upgrade"
+  hosts: k8s_masters
+  become: true
+  gather_facts: true
+
+  vars:
+    k8s_upgrade_from: "1.35"
+    k8s_upgrade_to: "1.36"
+    k8s_upgrade_target_version: "1.36.0"
+
+    k8s_upgrade_use_pluto: true
+    k8s_upgrade_pluto_version: "5.21.0"
+
+    k8s_upgrade_snapshot_dir: "/var/lib/etcd-backups"
+    k8s_upgrade_fetch_snapshot: false
+
+    k8s_upgrade_etcdctl_method: "pod"
+    k8s_upgrade_drain_node: false
+    k8s_upgrade_primary_group: "k8s_masters"
+    k8s_upgrade_additional_group: "k8s_control_planes"
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s_upgrade
+
+# ---------------------------------------------------------------------------
+# Play 2: Additional control plane nodes (serial, one at a time)
+# ---------------------------------------------------------------------------
+- name: "HA Upgrade 1.35->1.36 | Phase 4: Upgrade additional control planes"
+  hosts: k8s_control_planes
+  become: true
+  gather_facts: true
+  serial: 1
+  tags: [upgrade_additional]
+
+  vars:
+    k8s_upgrade_from: "1.35"
+    k8s_upgrade_to: "1.36"
+    k8s_upgrade_target_version: "1.36.0"
+    k8s_upgrade_drain_node: false
+    k8s_upgrade_drain_timeout: "300s"
+    k8s_upgrade_drain_grace_period: 30
+    k8s_upgrade_primary_group: "k8s_masters"
+
+  tasks:
+    - name: "additional_cp | assert required variables are set"
+      assert:
+        that:
+          - k8s_upgrade_from | length > 0
+          - k8s_upgrade_to | length > 0
+          - k8s_upgrade_target_version | length > 0
+
+    - name: "additional_cp | upgrade node"
+      import_tasks: "{{ playbook_dir }}/../roles/k8s_upgrade/tasks/upgrade_additional_cp.yml"
+
+# ---------------------------------------------------------------------------
+# Play 3: Final verification
+# ---------------------------------------------------------------------------
+- name: "HA Upgrade 1.35->1.36 | Phase 5: Verify cluster"
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+  tags: [verify]
+
+  vars:
+    k8s_upgrade_target_version: "1.36.0"
+    k8s_upgrade_to: "1.36"
+
+  tasks:
+    - name: "verify | wait for all nodes to be Ready"
+      command: >
+        kubectl get nodes
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+      register: _node_states
+      until: _node_states.stdout_lines | map('split', ' ') | map('last') | list | unique == ['True']
+      retries: 30
+      delay: 10
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | display all cluster nodes"
+      command: kubectl get nodes -o wide
+      register: _final_nodes
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | show node state"
+      debug:
+        var: _final_nodes.stdout_lines
+
+    - name: "verify | confirm server version"
+      command: kubectl version --output=json
+      register: _post_version
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | assert server is on target minor version"
+      set_fact:
+        _post_server_minor: >-
+          {{ (_post_version.stdout | from_json).serverVersion.minor | replace('+', '') | int }}
+
+    - name: "verify | assert minor version matches target"
+      assert:
+        that: _post_server_minor | int == k8s_upgrade_to.split('.')[1] | int
+        fail_msg: >
+          Server still reporting minor {{ _post_server_minor }}, expected {{ k8s_upgrade_to.split('.')[1] }}.
+
+    - name: "verify | check etcd cluster health"
+      shell: |
+        ETCD_POD=$(kubectl get pod -n kube-system -l component=etcd -o jsonpath='{.items[0].metadata.name}')
+        kubectl exec -n kube-system $ETCD_POD -- etcdctl endpoint health \
+          --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+          --cert=/etc/kubernetes/pki/etcd/peer.crt \
+          --key=/etc/kubernetes/pki/etcd/peer.key \
+          --endpoints=https://127.0.0.1:2379 \
+          --cluster
+      register: _etcd_health
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+        ETCDCTL_API: "3"
+
+    - name: "verify | show etcd cluster health"
+      debug:
+        var: _etcd_health.stdout_lines
+
+    - name: "verify | upgrade complete"
+      debug:
+        msg:
+          - "HA cluster upgrade to Kubernetes {{ k8s_upgrade_target_version }} complete."
+          - "Verify workloads with: kubectl get pods -A"

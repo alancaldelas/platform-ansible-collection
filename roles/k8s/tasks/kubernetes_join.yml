@@ -41,7 +41,7 @@
 - name: "join | assert master facts are available (gather_facts must be true)"
   assert:
     that:
-      - hostvars[groups[k8s_master_group][0]]['ansible_default_ipv4'] is defined
+      - hostvars[groups[k8s_master_group][0]]['ansible_facts']['default_ipv4'] is defined
     fail_msg: >
       Facts for the master host '{{ groups[k8s_master_group][0] }}' are not
       available. Ensure gather_facts: true is set in the master play so that
@@ -87,7 +87,7 @@
       {{
         k8s_control_plane_endpoint
         if k8s_control_plane_endpoint | length > 0
-        else hostvars[groups[k8s_master_group][0]]['ansible_default_ipv4']['address'] + ':6443'
+        else hostvars[groups[k8s_master_group][0]]['ansible_facts']['default_ipv4']['address'] + ':6443'
       }}
 
 # ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@
 
 - name: "join | wait for node to become Ready"
   command: >
-    kubectl get node {{ ansible_hostname }}
+    kubectl get node {{ ansible_facts['nodename'] }}
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
   register: _worker_ready
   until: _worker_ready.stdout == "True"
@@ -136,7 +136,7 @@
 
 - name: "join | confirm node is Ready"
   debug:
-    msg: "Node {{ ansible_hostname }} successfully joined and is Ready."
+    msg: "Node {{ ansible_facts['nodename'] }} successfully joined and is Ready."
 
 # ---------------------------------------------------------------------------
 # 7. Verify master → worker connectivity on port 10250 (Kubelet API)
@@ -146,7 +146,7 @@
 
 - name: "join | verify master can reach worker kubelet port (10250)"
   wait_for:
-    host: "{{ ansible_default_ipv4.address }}"
+    host: "{{ ansible_facts['default_ipv4']['address'] }}"
     port: 10250
     timeout: 30
     state: started
@@ -155,4 +155,4 @@
 
 - name: "join | confirm master→worker kubelet connectivity"
   debug:
-    msg: "Master can reach {{ ansible_hostname }}:10250 — kubelet API is accessible."
+    msg: "Master can reach {{ ansible_facts['nodename'] }}:10250 — kubelet API is accessible."

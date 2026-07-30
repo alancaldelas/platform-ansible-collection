@@ -2,12 +2,12 @@
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: InitConfiguration
 localAPIEndpoint:
-  advertiseAddress: "{{ ansible_default_ipv4.address }}"
+  advertiseAddress: "{{ ansible_facts['default_ipv4']['address'] }}"
   bindPort: 6443
 nodeRegistration:
   criSocket: "unix:///var/run/{{ k8s_container_runtime }}/{{ k8s_container_runtime }}.sock"
   imagePullPolicy: IfNotPresent
-  name: {{ ansible_hostname }}
+  name: {{ ansible_facts['nodename'] }}
   taints: []
 ---
 apiVersion: kubeadm.k8s.io/v1beta3
@@ -17,7 +17,7 @@ kubernetesVersion: v{{ kubernetes_version }}
 networking:
   podSubnet: {{ k8s_pod_subnet | default('10.244.0.0/16') }}
   serviceSubnet: {{ k8s_service_subnet | default('10.96.0.0/12') }}
-controlPlaneEndpoint: "{{ ansible_default_ipv4.address }}:6443"
+controlPlaneEndpoint: "{{ k8s_control_plane_endpoint if k8s_control_plane_endpoint | length > 0 else ansible_facts['default_ipv4']['address'] + ':6443' }}"
 apiServer:
   extraArgs:
     bind-address: "0.0.0.0"

@@ -1,0 +1,128 @@
+---
+# Kubernetes Single-Node Upgrade: 1.34 -> 1.35
+#
+# Upgrades a single-node kubeadm cluster from Kubernetes 1.34 to 1.35.
+# Use this instead of k8s-upgrade-1.34-to-1.35.yml when your inventory
+# has only one control plane node (no k8s_control_planes group).
+#
+# Phases:
+#   1. Pre-flight  - version check, cluster health, deprecated APIs, flag audit
+#   2. Snapshot    - etcd snapshot + PKI archive
+#   3. Upgrade     - kubeadm upgrade apply on the single node
+#   4. Verify      - confirm node Ready and on target version
+#
+# Inventory layout:
+#
+#   [k8s_masters]
+#   mynode ansible_host=192.168.1.10 ansible_user=root
+#
+#   [k8s_cluster:children]
+#   k8s_masters
+#
+# Usage:
+#   ansible-playbook -i inventory/single-node.ini playbooks/k8s-upgrade-single-node-1.34-to-1.35.yml
+
+# ---------------------------------------------------------------------------
+# Play 1: Pre-flight + Snapshot + Upgrade
+# ---------------------------------------------------------------------------
+- name: "Single-Node Upgrade 1.34->1.35 | Preflight, snapshot, upgrade"
+  hosts: k8s_masters
+  become: true
+  gather_facts: true
+
+  vars:
+    k8s_upgrade_from: "1.34"
+    k8s_upgrade_to: "1.35"
+    k8s_upgrade_target_version: "1.35.4"
+
+    k8s_upgrade_use_pluto: true
+    k8s_upgrade_pluto_version: "5.21.0"
+
+    k8s_upgrade_snapshot_dir: "/var/lib/etcd-backups"
+    k8s_upgrade_fetch_snapshot: false
+
+    k8s_upgrade_etcdctl_method: "pod"
+    k8s_upgrade_drain_node: false
+    k8s_upgrade_primary_group: "k8s_masters"
+    k8s_upgrade_additional_group: ""  # no additional nodes
+
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s_upgrade
+
+# ---------------------------------------------------------------------------
+# Play 2: Verify
+# ---------------------------------------------------------------------------
+- name: "Single-Node Upgrade 1.34->1.35 | Verify"
+  hosts: k8s_masters
+  become: true
+  gather_facts: false
+  tags: [verify]
+
+  vars:
+    k8s_upgrade_target_version: "1.35.4"
+    k8s_upgrade_to: "1.35"
+
+  tasks:
+    - name: "verify | wait for node to be Ready"
+      command: >
+        kubectl get nodes
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+      register: _node_states
+      until: _node_states.stdout_lines | map('split', ' ') | map('last') | list | unique == ['True']
+      retries: 30
+      delay: 10
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | display node"
+      command: kubectl get nodes -o wide
+      register: _final_nodes
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | show node state"
+      debug:
+        var: _final_nodes.stdout_lines
+
+    - name: "verify | confirm server version"
+      command: kubectl version --output=json
+      register: _post_version
+      changed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: "verify | assert server is on target minor version"
+      set_fact:
+        _post_server_minor: >-
+          {{ (_post_version.stdout | from_json).serverVersion.minor | replace('+', '') | int }}
+
+    - name: "verify | assert minor version matches target"
+      assert:
+        that: _post_server_minor | int == k8s_upgrade_to.split('.')[1] | int
+        fail_msg: >
+          Server still reporting minor {{ _post_server_minor }}, expected {{ k8s_upgrade_to.split('.')[1] }}.
+
+    - name: "verify | check etcd health"
+      shell: |
+        ETCD_POD=$(kubectl get pod -n kube-system -l component=etcd -o jsonpath='{.items[0].metadata.name}')
+        kubectl exec -n kube-system $ETCD_POD -- etcdctl endpoint health \
+          --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+          --cert=/etc/kubernetes/pki/etcd/peer.crt \
+          --key=/etc/kubernetes/pki/etcd/peer.key \
+          --endpoints=https://127.0.0.1:2379
+      register: _etcd_health
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+        ETCDCTL_API: "3"
+
+    - name: "verify | show etcd health"
+      debug:
+        var: _etcd_health.stdout_lines
+
+    - name: "verify | upgrade complete"
+      debug:
+        msg: "Single-node upgrade to Kubernetes {{ k8s_upgrade_target_version }} complete."

@@ -26,7 +26,7 @@
     state: present
   when: 
     - containerd_build_method == "source"
-    - ansible_os_family == "Debian"
+    - ansible_facts['os_family'] == "Debian"
 
 - name: Install build dependencies for source compilation (RHEL)
   package:
@@ -34,7 +34,7 @@
     state: present
   when: 
     - containerd_build_method == "source"
-    - ansible_os_family == "RedHat"
+    - ansible_facts['os_family'] == "RedHat"
 
 - name: Create build directory
   file:

@@ -26,14 +26,29 @@
     - k8s_container_runtime_version is not defined
   tags: ['runtime']
 
+- name: Check swap is disabled (after runtime role)
+  command: swapon --show
+  register: swap_status_post_runtime
+  changed_when: false
+  failed_when: false
+
+- name: Validate swap is disabled
+  assert:
+    that:
+      - swap_status_post_runtime.stdout == ""
+    fail_msg: "Swap is still active after the runtime role ran. Check zram/zswap configuration."
+    success_msg: "Swap is disabled"
+
 - name: Install Kubernetes Components
   include_tasks: kubernetes_install.yml
-  when: 
+  when:
     - not ( k8s_install_from_source | default(false) )
 
 - name: Install Kubernetes Components (From source)
   include_tasks: kubernetes_install_source.yml
-  when: k8s_install_from_source | default(false)
+  when:
+    - k8s_install_from_source | default(false)
+    - k8s_node_role == 'master'
 
 - name: Install CNI Plugin
   include_tasks: cni_install.yml

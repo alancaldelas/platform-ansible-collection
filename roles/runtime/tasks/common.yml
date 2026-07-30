@@ -3,13 +3,13 @@
   package:
     name: "{{ common_runtime_packages }}"
     state: present
-  when: ansible_os_family == "Debian"
+  when: ansible_facts['os_family'] == "Debian"
 
 - name: Install common runtime dependencies for RHEL-based systems
   package:
     name: "{{ common_runtime_packages_rhel }}"
     state: present
-  when: ansible_os_family == "RedHat"
+  when: ansible_facts['os_family'] == "RedHat"
 
 - name: Create container storage directory
   file:
@@ -73,19 +73,30 @@
     name: swap.target
     masked: yes
   failed_when: false
-  when: ansible_os_family == "RedHat"
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Stop and disable zram swap service (Fedora)
+  systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: no
+  failed_when: false
+  loop:
+    - systemd-zram-setup@zram0.service
+    - zramswap.service
+  when: ansible_facts['os_family'] == "RedHat"
 
 - name: Check if zswap is enabled (RHEL-based systems)
   command: cat /sys/module/zswap/parameters/enabled
   register: zswap_status
   failed_when: false
   changed_when: false
-  when: ansible_os_family == "RedHat"
+  when: ansible_facts['os_family'] == "RedHat"
 
 - name: Disable zswap immediately (RHEL-based systems)
   shell: echo 0 > /sys/module/zswap/parameters/enabled
   when:
-    - ansible_os_family == "RedHat"
+    - ansible_facts['os_family'] == "RedHat"
     - zswap_status.rc == 0
     - zswap_status.stdout == "Y"
 
@@ -94,7 +105,7 @@
   register: current_grub_cmdline
   failed_when: false
   changed_when: false
-  when: ansible_os_family == "RedHat"
+  when: ansible_facts['os_family'] == "RedHat"
 
 - name: Disable zswap permanently via kernel parameters (RHEL-based systems)
   replace:
@@ -103,7 +114,7 @@
     replace: '\1 zswap.enabled=0"'
     backup: yes
   when:
-    - ansible_os_family == "RedHat"
+    - ansible_facts['os_family'] == "RedHat"
     - zswap_status.rc == 0
     - current_grub_cmdline.rc == 0
     - '"zswap.enabled=0" not in current_grub_cmdline.stdout'

@@ -85,6 +85,113 @@ ansible-playbook -i inventory playbooks/runtime-podman.yml
 
 These playbooks deploy complete Kubernetes clusters with various configurations.
 
+### k8s-multi-node.yml
+Deploy a single control plane + one or more worker nodes.
+```bash
+ansible-playbook -i inventory playbooks/k8s-multi-node.yml
+```
+
+**Inventory layout:**
+```ini
+[k8s_masters]
+master01 ansible_host=192.168.1.10 ansible_user=ubuntu
+
+[k8s_workers]
+worker01 ansible_host=192.168.1.11 ansible_user=ubuntu
+worker02 ansible_host=192.168.1.12 ansible_user=ubuntu
+
+[k8s_cluster:children]
+k8s_masters
+k8s_workers
+
+[k8s_cluster:vars]
+ansible_become=yes
+```
+
+**How it works:**
+1. Installs the container runtime and Kubernetes packages on all nodes
+2. Initialises the control plane with `kubeadm init` on the master
+3. Installs the CNI plugin on the master
+4. Generates a short-lived bootstrap token on the master, then joins each worker with `kubeadm join` (one at a time)
+5. Waits for all nodes to reach `Ready` state
+
+**Key variables:**
+```yaml
+k8s_control_plane_endpoint: ""    # Set to a LB VIP/DNS name for production
+k8s_master_group: k8s_masters     # Inventory group containing the master
+k8s_join_token_ttl: "1h"          # Join token lifetime
+k8s_cni_plugin: cilium            # calico, flannel, weave, cilium
+```
+
+**Requirements:**
+- 2+ CPU cores, 2GB RAM, 20GB disk per node
+- All nodes reachable by the Ansible controller over SSH
+- Nodes can reach each other on ports 6443, 10250, 2379-2380
+
+---
+
+### k8s-ha-control-plane.yml
+Deploy a 3-node HA control plane with stacked etcd + worker nodes.
+```bash
+ansible-playbook -i inventory playbooks/k8s-ha-control-plane.yml \
+  -e "k8s_control_plane_endpoint=k8s-api.example.com:6443"
+```
+
+**Inventory layout:**
+```ini
+[k8s_masters]          # Primary control plane — runs kubeadm init
+master01 ansible_host=192.168.1.10 ansible_user=ubuntu
+
+[k8s_control_planes]   # Additional control plane nodes
+master02 ansible_host=192.168.1.11 ansible_user=ubuntu
+master03 ansible_host=192.168.1.12 ansible_user=ubuntu
+
+[k8s_workers]
+worker01 ansible_host=192.168.1.20 ansible_user=ubuntu
+
+[k8s_cluster:children]
+k8s_masters
+k8s_control_planes
+k8s_workers
+
+[k8s_cluster:vars]
+ansible_become=yes
+```
+
+**How it works:**
+1. Primary master runs `kubeadm init --upload-certs`, encrypts the PKI into a kube-system Secret
+2. Installs the CNI plugin on the primary master
+3. For each additional control plane node (serial): re-uploads certs (resets 2h TTL), generates a bootstrap token, then runs `kubeadm join --control-plane --certificate-key`
+4. Each additional CP node gets kubeconfig and is verified Ready with the `control-plane` label
+5. Workers join normally via `kubeadm join`
+6. Verifies all nodes are Ready and checks etcd cluster health across all 3 members
+
+**Requirements:**
+- A load balancer or VIP must be configured pointing to all control plane nodes on port 6443 **before** running this playbook — `k8s_control_plane_endpoint` must resolve and be reachable from all nodes
+- 3+ control plane nodes with ≥ 2 CPU, 2GB RAM, 20GB disk each
+- Odd number of control plane nodes recommended (3, 5) for etcd quorum
+
+**Key variables:**
+```yaml
+k8s_control_plane_endpoint: "k8s-api.example.com:6443"  # REQUIRED
+k8s_ha_enabled: true          # enables --upload-certs on init
+k8s_master_group: k8s_masters # group containing the primary master
+k8s_cni_plugin: cilium        # calico, flannel, weave, cilium
+```
+
+**Run specific phases with tags:**
+```bash
+# Primary control plane only
+ansible-playbook -i inventory playbooks/k8s-ha-control-plane.yml \
+  -e "k8s_control_plane_endpoint=..." --tags primary_cp
+
+# Verify only
+ansible-playbook -i inventory playbooks/k8s-ha-control-plane.yml \
+  -e "k8s_control_plane_endpoint=..." --tags verify
+```
+
+---
+
 ### k8s-single-node-basic.yml
 The simplest Kubernetes deployment with default settings.
 ```bash
@@ -375,6 +482,50 @@ container_no_pivot_root: true  # Required for ramdisk boot
 ```
 
 **When to use:** Your servers boot from network/ramdisk and you get "pivot_root: invalid argument" errors with standard container runtimes.
+
+---
+
+### k8s-upgrade-1.33-to-1.34.yml
+Upgrade a single-node kubeadm cluster from Kubernetes 1.33 to 1.34.
+```bash
+ansible-playbook -i inventory playbooks/k8s-upgrade-1.33-to-1.34.yml
+```
+
+**Features:**
+- Three strict phases: pre-flight (read-only), snapshot, upgrade
+- Pre-flight checks: version enforcement, cluster health, etcd health, cert expiry, disk space
+- Deprecated API detection via [Pluto](https://github.com/FairwindsOps/pluto) or a built-in hardcoded removal map (air-gap friendly)
+- kube-apiserver flag audit: catches removed flags and graduated feature gates before `kubeadm upgrade apply`
+- etcd snapshot + PKI archive written to the node before any mutation; optionally fetched to the controller
+- Upgrades kubeadm, then kubelet and kubectl in the correct order
+- Waits for node `Ready` and asserts the server version after upgrade
+
+**Phases (run independently with tags):**
+```bash
+# Pre-flight only (read-only, safe at any time):
+ansible-playbook -i inventory playbooks/k8s-upgrade-1.33-to-1.34.yml --tags preflight
+
+# Snapshot only:
+ansible-playbook -i inventory playbooks/k8s-upgrade-1.33-to-1.34.yml --tags snapshot
+```
+
+**Key variables:**
+```yaml
+k8s_upgrade_from: "1.33"              # Must match live cluster version
+k8s_upgrade_to: "1.34"
+k8s_upgrade_target_version: "1.34.0"
+k8s_upgrade_use_pluto: true           # false for air-gapped environments
+k8s_upgrade_fetch_snapshot: false     # true to copy snapshot to controller
+```
+
+**Inventory group:** `k8s_master`
+
+**Perfect for:**
+- Routine minor version upgrades of single-node clusters
+- Environments requiring a safe rollback point (etcd snapshot) before any changes
+- Air-gapped environments (set `k8s_upgrade_use_pluto: false`)
+
+**See also:** [roles/k8s_upgrade/README.md](../roles/k8s_upgrade/README.md)
 
 ---
 

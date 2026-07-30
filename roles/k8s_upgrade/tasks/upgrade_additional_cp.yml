@@ -29,7 +29,7 @@
     curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/deb/Release.key |
     gpg --batch --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
   become: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_additional_cp | repo | add apt repository (Debian)"
   apt_repository:
@@ -38,7 +38,7 @@
     filename: kubernetes
     update_cache: true
   become: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_additional_cp | repo | add yum/dnf repository (RedHat)"
   yum_repository:
@@ -49,7 +49,7 @@
     gpgkey: "https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/rpm/repodata/repomd.xml.key"
     enabled: true
   become: true
-  when: ansible_os_family == "RedHat"
+  when: ansible_facts['os_family'] == "RedHat"
 
 # ---------------------------------------------------------------------------
 # 2. Upgrade kubeadm
@@ -59,7 +59,7 @@
   command: apt-mark unhold kubeadm
   become: true
   changed_when: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_additional_cp | kubeadm | install target version (Debian)"
   apt:
@@ -68,13 +68,13 @@
     update_cache: false
     allow_downgrade: false
   become: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_additional_cp | kubeadm | hold package (Debian)"
   command: apt-mark hold kubeadm
   become: true
   changed_when: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_additional_cp | kubeadm | install target version (RedHat yum)"
   yum:
@@ -83,8 +83,8 @@
     update_cache: false
   become: true
   when:
-    - ansible_os_family == "RedHat"
-    - ansible_pkg_mgr == "yum"
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] == "yum"
 
 - name: "upgrade_additional_cp | kubeadm | install target version (RedHat dnf)"
   dnf:
@@ -93,8 +93,8 @@
     update_cache: false
   become: true
   when:
-    - ansible_os_family == "RedHat"
-    - ansible_pkg_mgr in ["dnf", "dnf5"]
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] in ["dnf", "dnf5"]
 
 # ---------------------------------------------------------------------------
 # 3. kubeadm upgrade node (additional control plane specific command)
@@ -106,7 +106,23 @@
 # addon/kube-proxy phase even though the static pod upgrades succeed.
 # ---------------------------------------------------------------------------
 
-- name: "upgrade_additional_cp | preflight | wait for primary apiserver ready to serve"
+- name: "upgrade_additional_cp | preflight | build etcd endpoint list"
+  set_fact:
+    _all_etcd_endpoints: >-
+      {{
+        (groups[k8s_upgrade_primary_group] | default([]) +
+         groups[k8s_upgrade_additional_group] | default([]))
+        | unique
+        | map('extract', hostvars, 'ansible_host')
+        | select('defined')
+        | map('regex_replace', '^(.*)$', 'https://\1:2379')
+        | join(',')
+      }}
+  when:
+    - k8s_upgrade_additional_group | default('') != ''
+    - groups[k8s_upgrade_additional_group] | default([]) | length > 0
+
+- name: "upgrade_additional_cp | preflight | wait for kubeadm-config configmap"
   command: kubectl get configmap kubeadm-config -n kube-system
   register: _apiserver_cm_check
   until: _apiserver_cm_check.rc == 0
@@ -116,6 +132,64 @@
   delegate_to: "{{ groups[k8s_upgrade_primary_group][0] }}"
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "upgrade_additional_cp | preflight | wait for kube-proxy configmap"
+  command: kubectl get configmap kube-proxy -n kube-system
+  register: _kube_proxy_cm_check
+  until: _kube_proxy_cm_check.rc == 0
+  retries: 36
+  delay: 10
+  changed_when: false
+  delegate_to: "{{ groups[k8s_upgrade_primary_group][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "upgrade_additional_cp | preflight | wait for all nodes Ready before upgrading this node"
+  command: >
+    kubectl get nodes
+    -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+  register: _all_nodes_ready
+  until: _all_nodes_ready.stdout_lines | reject('equalto', 'True') | list | length == 0
+  retries: 36
+  delay: 10
+  changed_when: false
+  delegate_to: "{{ groups[k8s_upgrade_primary_group][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: "upgrade_additional_cp | preflight | get etcd pod name for health check"
+  command: >
+    kubectl get pod -n kube-system -l component=etcd
+    -o jsonpath='{.items[0].metadata.name}'
+  register: _preflight_etcd_pod
+  changed_when: false
+  delegate_to: "{{ groups[k8s_upgrade_primary_group][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when:
+    - _all_etcd_endpoints is defined
+
+- name: "upgrade_additional_cp | preflight | wait for etcd healthy on all endpoints"
+  command: >
+    kubectl exec -n kube-system {{ _preflight_etcd_pod.stdout }}
+    -- etcdctl endpoint health
+    --cacert=/etc/kubernetes/pki/etcd/ca.crt
+    --cert=/etc/kubernetes/pki/etcd/peer.crt
+    --key=/etc/kubernetes/pki/etcd/peer.key
+    --endpoints={{ _all_etcd_endpoints }}
+    --cluster
+  register: _preflight_etcd_health
+  until: _preflight_etcd_health.rc == 0
+  retries: 36
+  delay: 10
+  changed_when: false
+  delegate_to: "{{ groups[k8s_upgrade_primary_group][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+    ETCDCTL_API: "3"
+  when:
+    - _all_etcd_endpoints is defined
+    - _preflight_etcd_pod.stdout | default('') | length > 0
 
 - name: "upgrade_additional_cp | kubeadm | run upgrade node"
   command: kubeadm upgrade node
@@ -154,22 +228,6 @@
 # apiserver survives the mixed-version etcd window.
 # ---------------------------------------------------------------------------
 
-- name: "upgrade_additional_cp | etcd | build all-member endpoint list"
-  set_fact:
-    _all_etcd_endpoints: >-
-      {{
-        (groups[k8s_upgrade_primary_group] | default([]) +
-         groups[k8s_upgrade_additional_group] | default([]))
-        | unique
-        | map('extract', hostvars, 'ansible_host')
-        | select('defined')
-        | map('regex_replace', '^(.*)$', 'https://\1:2379')
-        | join(',')
-      }}
-  when:
-    - k8s_upgrade_additional_group | default('') != ''
-    - groups[k8s_upgrade_additional_group] | default([]) | length > 0
-
 - name: "upgrade_additional_cp | etcd | patch apiserver manifest to use all etcd endpoints"
   replace:
     path: /etc/kubernetes/manifests/kube-apiserver.yaml
@@ -186,7 +244,7 @@
 # ---------------------------------------------------------------------------
 
 - name: "upgrade_additional_cp | drain | cordon node"
-  command: kubectl cordon {{ ansible_hostname }}
+  command: kubectl cordon {{ ansible_facts['nodename'] }}
   delegate_to: "{{ groups[k8s_upgrade_primary_group][0] }}"
   changed_when: true
   environment:
@@ -195,7 +253,7 @@
 
 - name: "upgrade_additional_cp | drain | drain node"
   command: >
-    kubectl drain {{ ansible_hostname }}
+    kubectl drain {{ ansible_facts['nodename'] }}
     --ignore-daemonsets
     --delete-emptydir-data
     --timeout={{ k8s_upgrade_drain_timeout }}
@@ -214,7 +272,7 @@
   command: apt-mark unhold kubelet kubectl
   become: true
   changed_when: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_additional_cp | kubelet | install target versions (Debian)"
   apt:
@@ -225,13 +283,13 @@
     update_cache: false
     allow_downgrade: false
   become: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_additional_cp | kubelet | hold packages (Debian)"
   command: apt-mark hold kubelet kubectl
   become: true
   changed_when: true
-  when: ansible_distribution == "Ubuntu"
+  when: ansible_facts['distribution'] == "Ubuntu"
 
 - name: "upgrade_additional_cp | kubelet | install target versions (RedHat yum)"
   yum:
@@ -241,8 +299,8 @@
     state: present
   become: true
   when:
-    - ansible_os_family == "RedHat"
-    - ansible_pkg_mgr == "yum"
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] == "yum"
 
 - name: "upgrade_additional_cp | kubelet | install target versions (RedHat dnf)"
   dnf:
@@ -252,8 +310,8 @@
     state: present
   become: true
   when:
-    - ansible_os_family == "RedHat"
-    - ansible_pkg_mgr in ["dnf", "dnf5"]
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] in ["dnf", "dnf5"]
 
 # ---------------------------------------------------------------------------
 # 6. Restart kubelet
@@ -286,7 +344,7 @@
 # ---------------------------------------------------------------------------
 
 - name: "upgrade_additional_cp | drain | uncordon node"
-  command: kubectl uncordon {{ ansible_hostname }}
+  command: kubectl uncordon {{ ansible_facts['nodename'] }}
   delegate_to: "{{ groups[k8s_upgrade_primary_group][0] }}"
   changed_when: true
   environment:
@@ -299,7 +357,7 @@
 
 - name: "upgrade_additional_cp | verify | wait for node to return to Ready"
   command: >
-    kubectl get node {{ ansible_hostname }}
+    kubectl get node {{ ansible_facts['nodename'] }}
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
   register: _node_ready_check
   until: _node_ready_check.stdout == "True"
@@ -310,10 +368,46 @@
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
 
+- name: "upgrade_additional_cp | verify | get etcd pod name for health check"
+  command: >
+    kubectl get pod -n kube-system -l component=etcd
+    -o jsonpath='{.items[0].metadata.name}'
+  register: _etcd_pod_name
+  changed_when: false
+  delegate_to: "{{ groups[k8s_upgrade_primary_group][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when:
+    - k8s_upgrade_additional_group | default('') != ''
+    - _all_etcd_endpoints is defined
+
+- name: "upgrade_additional_cp | verify | wait for etcd healthy on all endpoints"
+  command: >
+    kubectl exec -n kube-system {{ _etcd_pod_name.stdout }}
+    -- etcdctl endpoint health
+    --cacert=/etc/kubernetes/pki/etcd/ca.crt
+    --cert=/etc/kubernetes/pki/etcd/peer.crt
+    --key=/etc/kubernetes/pki/etcd/peer.key
+    --endpoints={{ _all_etcd_endpoints }}
+    --cluster
+  register: _etcd_health_post
+  until: _etcd_health_post.rc == 0
+  retries: 24
+  delay: 10
+  changed_when: false
+  delegate_to: "{{ groups[k8s_upgrade_primary_group][0] }}"
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+    ETCDCTL_API: "3"
+  when:
+    - k8s_upgrade_additional_group | default('') != ''
+    - _all_etcd_endpoints is defined
+    - _etcd_pod_name.stdout | default('') | length > 0
+
 - name: "upgrade_additional_cp | summary"
   debug:
     msg:
       - "Additional control plane upgrade complete."
       - "  From : {{ k8s_upgrade_from }}"
       - "  To   : {{ k8s_upgrade_target_version }}"
-      - "  Node : {{ ansible_hostname }}"
+      - "  Node : {{ ansible_facts['nodename'] }}"

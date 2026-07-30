@@ -1,16 +1,16 @@
 ---
 - name: Add Docker GPG key (Debian/Ubuntu)
   apt_key:
-    url: https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg
+    url: https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}/gpg
     state: present
-  when: ansible_os_family == "Debian"
+  when: ansible_facts['os_family'] == "Debian"
 
 - name: Add Docker repository (Debian/Ubuntu)
   apt_repository:
-    repo: "deb [arch=amd64] https://download.docker.com/linux/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} stable"
+    repo: "deb [arch=amd64] https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }} {{ ansible_facts['distribution_release'] }} stable"
     state: present
     update_cache: yes
-  when: ansible_os_family == "Debian"
+  when: ansible_facts['os_family'] == "Debian"
 
 - name: Add Docker repository (RHEL/CentOS)
   yum_repository:
@@ -20,7 +20,7 @@
     gpgcheck: yes
     gpgkey: https://download.docker.com/linux/centos/gpg
     enabled: yes
-  when: ansible_os_family == "RedHat"
+  when: ansible_facts['os_family'] == "RedHat"
 
 - name: Install Docker CE
   package:

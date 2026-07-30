@@ -164,4 +164,4 @@
   become: true
   when: 
     - k8s_install_from_source | bool
-    - ansible_distribution == "Ubuntu"
+    - ansible_facts['distribution'] == "Ubuntu"

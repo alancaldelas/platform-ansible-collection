@@ -128,8 +128,49 @@ k8s_container_runtime_version: "1.7.2"   # Runtime version (when managed)
 k8s_cluster_name: kubernetes             # Cluster name
 k8s_pod_subnet: "10.244.0.0/16"         # Pod network CIDR
 k8s_service_subnet: "10.96.0.0/12"      # Service network CIDR
-k8s_node_role: worker                    # Node role: master, worker, etcd
+
+# Node role — controls whether this node runs kubeadm init or kubeadm join.
+# master: initialises the control plane
+# worker: joins an existing cluster
+k8s_node_role: master
 ```
+
+### Multi-Node Configuration
+```yaml
+# DNS name or VIP that workers use to reach the API server.
+# If not set, the master's default IPv4 address is used.
+# REQUIRED when k8s_ha_enabled: true.
+k8s_control_plane_endpoint: ""           # e.g. "k8s-api.example.com:6443"
+
+# Enable HA control plane mode.
+# When true, kubeadm init runs with --upload-certs so additional control
+# plane nodes can join with kubeadm join --control-plane.
+# Requires k8s_control_plane_endpoint to be set.
+k8s_ha_enabled: false
+
+# Ansible inventory group containing the PRIMARY control plane node (ran init).
+# Additional CP nodes and workers delegate token/cert generation to this group.
+k8s_master_group: "k8s_masters"
+
+# Ansible inventory group for additional control plane nodes (HA only).
+k8s_cp_join_group: "k8s_control_planes"
+
+# TTL for the bootstrap token generated on the master for workers to join.
+k8s_join_token_ttl: "1h"
+
+# Ports validated on worker nodes (subset of master port list).
+k8s_worker_required_ports:
+  - 10250  # Kubelet API
+  - 10255  # Read-only Kubelet API
+```
+
+### Node Roles
+
+| `k8s_node_role` | Action |
+|-----------------|--------|
+| `master` | Runs `kubeadm init`. Installs CNI. |
+| `control_plane_join` | Joins as an additional control plane node (`kubeadm join --control-plane`). Requires `k8s_ha_enabled: true`. |
+| `worker` | Joins as a worker node (`kubeadm join`). |
 
 ### CNI Plugin Selection
 ```yaml
@@ -185,6 +226,114 @@ Automatically installed by the role:
 - RHEL/CentOS: yum-utils, device-mapper-persistent-data, lvm2
 
 ## Example Playbooks
+
+### Multi-Node Cluster (1 master + N workers)
+
+```yaml
+# Inventory:
+#   [k8s_masters]
+#   master01 ansible_host=192.168.1.10 ansible_user=ubuntu
+#
+#   [k8s_workers]
+#   worker01 ansible_host=192.168.1.11 ansible_user=ubuntu
+#   worker02 ansible_host=192.168.1.12 ansible_user=ubuntu
+#
+#   [k8s_cluster:children]
+#   k8s_masters
+#   k8s_workers
+#
+#   [k8s_cluster:vars]
+#   ansible_become=yes
+
+---
+# Phase 1: control plane
+- name: Deploy control plane
+  hosts: k8s_masters
+  become: true
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+  vars:
+    k8s_node_role: master
+    k8s_master_group: k8s_masters
+    k8s_cni_plugin: calico
+
+# Phase 2: workers
+- name: Join workers
+  hosts: k8s_workers
+  become: true
+  serial: 1
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+  vars:
+    k8s_node_role: worker
+    k8s_master_group: k8s_masters
+    k8s_install_cni: false
+```
+
+See `playbooks/k8s-multi-node.yml` for a complete example with verification.
+
+---
+
+### HA Control Plane (3 control plane nodes + workers)
+
+```yaml
+# Inventory:
+#   [k8s_masters]        <- primary (runs kubeadm init)
+#   master01 ansible_host=192.168.1.10 ansible_user=ubuntu
+#
+#   [k8s_control_planes] <- additional control plane nodes
+#   master02 ansible_host=192.168.1.11 ansible_user=ubuntu
+#   master03 ansible_host=192.168.1.12 ansible_user=ubuntu
+#
+#   [k8s_workers]
+#   worker01 ansible_host=192.168.1.20 ansible_user=ubuntu
+
+---
+# Phase 1: primary control plane
+- name: Deploy primary control plane
+  hosts: k8s_masters
+  become: true
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+  vars:
+    k8s_node_role: master
+    k8s_ha_enabled: true
+    k8s_master_group: k8s_masters
+    k8s_control_plane_endpoint: "k8s-api.example.com:6443"
+    k8s_cni_plugin: cilium
+
+# Phase 2: additional control plane nodes (serial: 1 for etcd quorum)
+- name: Join additional control plane nodes
+  hosts: k8s_control_planes
+  become: true
+  serial: 1
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+  vars:
+    k8s_node_role: control_plane_join
+    k8s_ha_enabled: true
+    k8s_master_group: k8s_masters
+    k8s_control_plane_endpoint: "k8s-api.example.com:6443"
+    k8s_install_cni: false
+
+# Phase 3: workers
+- name: Join workers
+  hosts: k8s_workers
+  become: true
+  serial: 1
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s
+  vars:
+    k8s_node_role: worker
+    k8s_ha_enabled: true
+    k8s_master_group: k8s_masters
+    k8s_control_plane_endpoint: "k8s-api.example.com:6443"
+    k8s_install_cni: false
+```
+
+See `playbooks/k8s-ha-control-plane.yml` for a complete example with etcd health verification.
+
+---
 
 ### Basic Single-Node Kubernetes Cluster
 ```yaml
