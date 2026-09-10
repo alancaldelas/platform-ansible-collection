@@ -59,7 +59,7 @@ crio_build_method: binary        # binary or source
 ```yaml
 # Component versions
 runc_version: "1.1.9"
-cni_version: "1.3.0"
+cni_version: "1.20.1"
 go_version: "1.21.3"
 kubernetes_version: "1.28"
 ```

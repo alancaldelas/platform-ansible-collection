@@ -1,0 +1,15 @@
+---
+- name: "Cluster Upgrade | Control Plane Upgrade"
+  import_role:
+    name: alancaldelas.kubernetes_baremetal.k8s_upgrade
+  when: k8s_upgrade_node_role == 'master'
+
+- name: "Cluster Upgrade | Worker Node Upgrade"
+  import_tasks: upgrade_workers.yml
+  when: k8s_upgrade_node_role == 'worker'
+
+- name: "Cluster Upgrade | Upgrade Cilium"
+  import_tasks: upgrade_cilium.yml
+  when: 
+    - k8s_upgrade_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'

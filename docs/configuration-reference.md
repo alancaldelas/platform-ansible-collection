@@ -58,7 +58,7 @@ containerd_build_method: binary
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `runc_version` | `1.1.9` | Version of runc to install |
-| `cni_version` | `1.3.0` | Version of CNI plugins |
+| `cni_version` | `1.20.1` | Version of CNI plugins |
 | `go_version` | `1.21.3` | Go version for source builds |
 
 ## Registry Configuration

@@ -1,0 +1,44 @@
+---
+- name: "Cilium Upgrade | Check if Cilium CLI exists"
+  stat:
+    path: /usr/local/bin/cilium
+  register: _cilium_cli_stat
+
+- name: "Cilium Upgrade | Download Cilium CLI"
+  get_url:
+    url: "https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz"
+    dest: /tmp/cilium-cli.tar.gz
+    mode: '0644'
+  when: not _cilium_cli_stat.stat.exists
+
+- name: "Cilium Upgrade | Extract Cilium CLI"
+  unarchive:
+    src: /tmp/cilium-cli.tar.gz
+    dest: /usr/local/bin
+    remote_src: yes
+    mode: '0755'
+  when: not _cilium_cli_stat.stat.exists
+  become: true
+
+- name: "Cilium Upgrade | Run upgrade"
+  command: >-
+    /usr/local/bin/cilium upgrade --version {{ cilium_version }}
+    {{ cilium_gateway_api_flags | default('') if cilium_gateway_api_enabled | default(false) else '' }}
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: cilium_upgrade_cmd
+  become: true
+
+- name: "Cilium Upgrade | Wait for Cilium to be ready"
+  command: /usr/local/bin/cilium status --wait
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: cilium_upgrade_cmd.changed
+  become: true
+
+- name: "Cilium Upgrade | Clean up Cilium CLI tarball"
+  file:
+    path: /tmp/cilium-cli.tar.gz
+    state: absent
+  when: not _cilium_cli_stat.stat.exists
+

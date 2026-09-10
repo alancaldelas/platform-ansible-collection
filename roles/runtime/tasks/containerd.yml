@@ -150,6 +150,44 @@
     group: root
   notify: restart containerd
 
+- name: Create containerd certs.d directory
+  file:
+    path: /etc/containerd/certs.d/{{ item }}
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  loop: "{{ (container_registries | default([])) + (container_insecure_registries | default([])) }}"
+
+- name: Configure standard registries
+  copy:
+    dest: "/etc/containerd/certs.d/{{ item }}/hosts.toml"
+    content: |
+      server = "https://{{ item }}"
+      
+      [host."https://{{ item }}"]
+        capabilities = ["pull", "resolve"]
+    mode: '0644'
+    owner: root
+    group: root
+  loop: "{{ container_registries | default([]) }}"
+  notify: restart containerd
+
+- name: Configure insecure registries
+  copy:
+    dest: "/etc/containerd/certs.d/{{ item }}/hosts.toml"
+    content: |
+      server = "http://{{ item }}"
+      
+      [host."http://{{ item }}"]
+        capabilities = ["pull", "resolve"]
+        skip_verify = true
+    mode: '0644'
+    owner: root
+    group: root
+  loop: "{{ container_insecure_registries | default([]) }}"
+  notify: restart containerd
+
 - name: Configure containerd with custom settings
   template:
     src: containerd-config.toml.j2

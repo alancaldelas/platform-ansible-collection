@@ -209,3 +209,7 @@ go_tarball: "go{{ go_version }}.linux-amd64.tar.gz"
 k8s_repo: "https://github.com/kubernetes/kubernetes.git"
 k8s_branch: "v{{ kubernetes_version }}"
 k8s_dir: "/opt/kubernetes"
+
+# Multus CNI
+k8s_multus_enabled: false
+multus_version: "v4.1.4"

@@ -9,7 +9,7 @@ container_runtime_version: "2.2.2"
 
 # Component versions for source installation
 runc_version: "1.2.2"
-cni_version: "1.5.1"
+cni_version: "1.20.1"
 
 # Build method: 'binary' (download pre-built) or 'source' (compile from source)
 containerd_build_method: binary

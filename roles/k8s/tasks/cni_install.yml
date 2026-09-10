@@ -286,3 +286,46 @@
     - weave
     - cilium
   when: k8s_node_role == 'master'
+
+- name: Check if Multus CNI is already installed
+  command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get daemonset -n kube-system kube-multus-ds -o name
+  register: multus_check
+  failed_when: false
+  changed_when: false
+  when:
+    - k8s_node_role == 'master'
+    - k8s_multus_enabled | bool
+
+- name: Download Multus manifest
+  get_url:
+    url: "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/{{ multus_version }}/deployments/multus-daemonset-thick.yml"
+    dest: /tmp/multus.yaml
+    mode: '0644'
+  when:
+    - k8s_node_role == 'master'
+    - k8s_multus_enabled | bool
+    - multus_check.stdout == ""
+
+- name: Install Multus CNI
+  command: kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f /tmp/multus.yaml
+  when:
+    - k8s_node_role == 'master'
+    - k8s_multus_enabled | bool
+    - multus_check.stdout == ""
+  register: multus_install
+
+- name: Wait for Multus pods to be ready
+  command: kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=ready --timeout=300s pods -n kube-system -l app=multus
+  when:
+    - k8s_node_role == 'master'
+    - k8s_multus_enabled | bool
+    - multus_install.changed | default(false)
+  failed_when: false
+
+- name: Clean up Multus manifest
+  file:
+    path: /tmp/multus.yaml
+    state: absent
+  when:
+    - k8s_node_role == 'master'
+    - k8s_multus_enabled | bool

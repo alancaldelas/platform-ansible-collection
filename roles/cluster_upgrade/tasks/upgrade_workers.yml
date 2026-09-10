@@ -1,0 +1,187 @@
+---
+# ---------------------------------------------------------------------------
+# 1. Drain Node (Executed on the first control plane node)
+# ---------------------------------------------------------------------------
+- name: "Worker Upgrade | Drain | Cordon node"
+  command: kubectl cordon {{ inventory_hostname }}
+  changed_when: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  delegate_to: "{{ groups[k8s_upgrade_primary_group | default('k8s_masters')][0] }}"
+  when: k8s_upgrade_drain_worker_node | bool
+
+- name: "Worker Upgrade | Drain | Drain node"
+  command: >
+    kubectl drain {{ inventory_hostname }}
+    --ignore-daemonsets
+    --delete-emptydir-data
+    --force
+    --timeout={{ k8s_upgrade_drain_timeout | default('300s') }}
+    --grace-period={{ k8s_upgrade_drain_grace_period | default(-1) }}
+  changed_when: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  delegate_to: "{{ groups[k8s_upgrade_primary_group | default('k8s_masters')][0] }}"
+  when: k8s_upgrade_drain_worker_node | bool
+  ignore_errors: true
+
+# ---------------------------------------------------------------------------
+# 2. Setup repos & upgrade kubeadm
+# ---------------------------------------------------------------------------
+- name: "Worker Upgrade | set target version repo minor"
+  set_fact:
+    _upg_repo_major: "{{ k8s_upgrade_target_version.split('.')[0] }}"
+    _upg_repo_minor: "{{ k8s_upgrade_target_version.split('.')[1] }}"
+
+- name: "Worker Upgrade | repo | add target version apt repository (Debian)"
+  block:
+    - name: "Worker Upgrade | repo | install signing key"
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/deb/Release.key |
+        gpg --batch --yes --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      become: true
+
+    - name: "Worker Upgrade | repo | add apt repository"
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/deb/ /"
+        state: present
+        filename: kubernetes
+        update_cache: true
+      become: true
+  when: ansible_facts['distribution'] == "Ubuntu"
+
+- name: "Worker Upgrade | repo | add target version yum/dnf repository (RedHat)"
+  yum_repository:
+    name: kubernetes
+    description: "Kubernetes v{{ _upg_repo_major }}.{{ _upg_repo_minor }}"
+    baseurl: "https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/rpm/"
+    gpgcheck: true
+    gpgkey: "https://pkgs.k8s.io/core:/stable:/v{{ _upg_repo_major }}.{{ _upg_repo_minor }}/rpm/repodata/repomd.xml.key"
+    enabled: true
+  become: true
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: "Worker Upgrade | kubeadm | unhold package (Debian)"
+  command: apt-mark unhold kubeadm
+  become: true
+  changed_when: true
+  when: ansible_facts['distribution'] == "Ubuntu"
+
+- name: "Worker Upgrade | kubeadm | install target version (Debian)"
+  apt:
+    name: "kubeadm={{ k8s_upgrade_target_version }}*"
+    state: present
+    update_cache: false
+    allow_downgrade: false
+  become: true
+  when: ansible_facts['distribution'] == "Ubuntu"
+
+- name: "Worker Upgrade | kubeadm | hold package (Debian)"
+  command: apt-mark hold kubeadm
+  become: true
+  changed_when: true
+  when: ansible_facts['distribution'] == "Ubuntu"
+
+- name: "Worker Upgrade | kubeadm | install target version (RedHat yum)"
+  yum:
+    name: "kubeadm-{{ k8s_upgrade_target_version }}"
+    state: present
+    update_cache: false
+  become: true
+  when:
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] == "yum"
+
+- name: "Worker Upgrade | kubeadm | install target version (RedHat dnf)"
+  dnf:
+    name: "kubeadm-{{ k8s_upgrade_target_version }}"
+    state: present
+    update_cache: false
+  become: true
+  when:
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] in ["dnf", "dnf5"]
+
+# ---------------------------------------------------------------------------
+# 3. kubeadm upgrade node
+# ---------------------------------------------------------------------------
+- name: "Worker Upgrade | kubeadm | run upgrade node"
+  command: kubeadm upgrade node
+  register: _kubeadm_node_apply
+  changed_when: true
+  become: true
+
+- name: "Worker Upgrade | kubeadm | show upgrade output"
+  debug:
+    var: _kubeadm_node_apply.stdout_lines
+
+# ---------------------------------------------------------------------------
+# 4. Upgrade kubelet and kubectl
+# ---------------------------------------------------------------------------
+- name: "Worker Upgrade | kubelet | unhold packages (Debian)"
+  command: apt-mark unhold kubelet kubectl
+  become: true
+  changed_when: true
+  when: ansible_facts['distribution'] == "Ubuntu"
+
+- name: "Worker Upgrade | kubelet | install target versions (Debian)"
+  apt:
+    name:
+      - "kubelet={{ k8s_upgrade_target_version }}*"
+      - "kubectl={{ k8s_upgrade_target_version }}*"
+    state: present
+    update_cache: false
+    allow_downgrade: false
+  become: true
+  when: ansible_facts['distribution'] == "Ubuntu"
+
+- name: "Worker Upgrade | kubelet | hold packages (Debian)"
+  command: apt-mark hold kubelet kubectl
+  become: true
+  changed_when: true
+  when: ansible_facts['distribution'] == "Ubuntu"
+
+- name: "Worker Upgrade | kubelet | install target versions (RedHat yum)"
+  yum:
+    name:
+      - "kubelet-{{ k8s_upgrade_target_version }}"
+      - "kubectl-{{ k8s_upgrade_target_version }}"
+    state: present
+  become: true
+  when:
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] == "yum"
+
+- name: "Worker Upgrade | kubelet | install target versions (RedHat dnf)"
+  dnf:
+    name:
+      - "kubelet-{{ k8s_upgrade_target_version }}"
+      - "kubectl-{{ k8s_upgrade_target_version }}"
+    state: present
+  become: true
+  when:
+    - ansible_facts['os_family'] == "RedHat"
+    - ansible_facts['pkg_mgr'] in ["dnf", "dnf5"]
+
+# ---------------------------------------------------------------------------
+# 5. Restart kubelet
+# ---------------------------------------------------------------------------
+- name: "Worker Upgrade | kubelet | daemon-reload and restart"
+  systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: true
+    enabled: true
+  become: true
+
+# ---------------------------------------------------------------------------
+# 6. Uncordon Node
+# ---------------------------------------------------------------------------
+- name: "Worker Upgrade | Drain | Uncordon node"
+  command: kubectl uncordon {{ inventory_hostname }}
+  changed_when: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  delegate_to: "{{ groups[k8s_upgrade_primary_group | default('k8s_masters')][0] }}"
+  when: k8s_upgrade_drain_worker_node | bool
+

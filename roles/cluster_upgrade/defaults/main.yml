@@ -1,0 +1,21 @@
+---
+# cluster_upgrade defaults
+
+k8s_upgrade_node_role: "{{ k8s_node_role | default('master') }}"
+
+# CNI
+k8s_cni_plugin: "{{ k8s_cni_plugin | default('cilium') }}"
+cilium_version: "{{ cilium_version | default('1.19.6') }}"
+cilium_gateway_api_enabled: false
+
+# K8s Upgrade
+k8s_upgrade_from: ""
+k8s_upgrade_to: ""
+k8s_upgrade_target_version: ""
+
+# Drain configuration
+k8s_upgrade_drain_node: false
+k8s_upgrade_drain_timeout: "300s"
+k8s_upgrade_drain_grace_period: 30
+
+k8s_upgrade_drain_worker_node: true
