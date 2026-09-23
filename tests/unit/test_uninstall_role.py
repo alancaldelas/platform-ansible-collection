@@ -28,3 +28,14 @@ class RoleTests(unittest.TestCase):
         task = next(task for task in tasks if '_uninstall_services' in task.get('ansible.builtin.set_fact', {}))
         expression = task['ansible.builtin.set_fact']['_uninstall_services']
         self.assertIn("rejectattr('value.status', 'equalto', 'not-found')", expression)
+
+    def test_preflight_decides_removable_packages_after_discovery(self):
+        tasks = yaml.safe_load((ROLE / 'tasks/main.yml').read_text())
+        names = [task.get('name') for task in tasks]
+        preflight = next(task for task in tasks if 'alancaldelas.kubernetes_baremetal.k8s_uninstall_node' in task)
+        self.assertEqual(preflight['alancaldelas.kubernetes_baremetal.k8s_uninstall_node']['packages'], '{{ _uninstall_packages }}')
+        self.assertLess(names.index('Resolve installed packages and services for removal'),
+                        names.index('Inspect node and validate storage before changing anything'))
+        removal = yaml.safe_load((ROLE / 'tasks/remove.yml').read_text())
+        assertion = next(task for task in removal if task.get('name', '').startswith('Assert no removable'))
+        self.assertIn('_uninstall_packages', assertion['ansible.builtin.assert']['that'][0])

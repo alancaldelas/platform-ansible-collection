@@ -39,6 +39,11 @@ options:
     elements: dict
     default: []
     description: Process identities captured before runtime shutdown.
+  packages:
+    type: list
+    elements: str
+    default: []
+    description: Installed packages selected for removal; preflight reports which can be removed without cascading onto unlisted packages.
   command_timeout:
     type: int
     default: 120
@@ -79,7 +84,7 @@ import time
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.alancaldelas.kubernetes_baremetal.plugins.module_utils.uninstall import (
     DATA_PATHS, cleanup_storage, configured_storage, configuration_processes, validate_file_paths, identifiers, iptables_cleanup_commands, mounts_under, owned_interface,
-    pinned_bpf_objects, pod_network_namespaces, remove_tree, require_confirmation, validate_data_paths,
+    pinned_bpf_objects, pod_network_namespaces, remove_tree, removable_packages, require_confirmation, validate_data_paths,
     stop_containerd, stop_cri, stop_oci,
 )
 
@@ -89,7 +94,7 @@ PROCESS_NAMES = {
     'kube-scheduler', 'etcd', 'dockerd', 'containerd', 'crio', 'cri-dockerd',
     'podman', 'conmon', 'runc', 'crun', 'rootlesskit',
 }
-TOOLS = ['kubeadm', 'crictl', 'ctr', 'docker', 'podman', 'ip', 'umount', 'runc', 'crun']
+TOOLS = ['kubeadm', 'crictl', 'ctr', 'docker', 'podman', 'ip', 'umount', 'runc', 'crun', 'rpm']
 CONTAINER_CGROUP = re.compile(r'kubepods|/docker/|docker-[0-9a-f]{12,}|libpod-[0-9a-f]{12,}|/cri-containerd-')
 
 
@@ -173,6 +178,21 @@ class Teardown:
         except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as error:
             self.warnings.append('%s: %s; mandatory offline cleanup and verification will follow' % (label, error))
 
+
+    def installed_dependents(self, package):
+        # Only RPM systems need this: apt cascades removals itself. rpm exits 1
+        # with 'no package requires' when nothing depends on the package.
+        if not self.tools['rpm']:
+            return []
+        result = subprocess.run([self.tools['rpm'], '-q', '--whatrequires', '--queryformat', '%{NAME}\n', package],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                                timeout=self.module.params['command_timeout'], env=dict(os.environ, LC_ALL='C'))
+        if result.returncode:
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip() and not line.startswith('no package')]
+
+    def package_plan(self):
+        return removable_packages(self.module.params.get('packages', []), self.installed_dependents)
 
     def preflight(self):
         if os.geteuid() != 0:
@@ -386,6 +406,7 @@ def main():
         'config_files': {'type': 'list', 'elements': 'str', 'default': []},
         'verify_binaries': {'type': 'list', 'elements': 'str', 'default': []},
         'tracked_processes': {'type': 'list', 'elements': 'dict', 'default': []},
+        'packages': {'type': 'list', 'elements': 'str', 'default': []},
     }, supports_check_mode=True)
     teardown = None
     try:
@@ -393,10 +414,13 @@ def main():
         teardown = Teardown(module)
         if module.check_mode or module.params['phase'] == 'preflight':
             observed = teardown.preflight()
+            removable, retained = teardown.package_plan()
+            for package, blockers in sorted(retained.items()):
+                teardown.warnings.append('Keeping package %s: still required by %s' % (package, ', '.join(blockers)))
             report_warnings(module, teardown)
             module.exit_json(changed=False, data_paths=teardown.paths,
                              commands=teardown.commands, processes=observed,
-                             tools=teardown.tools,
+                             tools=teardown.tools, removable_packages=removable, retained_packages=retained,
                              existing_data_paths=[p for p in teardown.paths if os.path.lexists(p)])
         getattr(teardown, module.params['phase'])()
         report_warnings(module, teardown)

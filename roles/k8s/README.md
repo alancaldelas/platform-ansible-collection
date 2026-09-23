@@ -583,6 +583,10 @@ journalctl -u kubelet -f
 journalctl -u containerd -f
 ```
 
+## Multus CNI
+
+Multus is installed by default after the primary CNI (`k8s_multus_enabled: true`, thick daemonset, version `multus_version`). It adds the `NetworkAttachmentDefinition` CRD so pods can request secondary interfaces with the `k8s.v1.cni.cncf.io/networks` annotation, using the CNI plugin binaries the role installs under `/opt/cni/bin`. With Cilium, the role passes `cni.exclusive=false` so the agent does not rename Multus's `00-multus.conf` out of `/etc/cni/net.d`, and upgrades an existing Cilium accordingly when Multus is enabled later. Set `k8s_multus_enabled: false` to skip it.
+
 ## Uninstallation
 
 Use the dedicated [full uninstall role](../k8s_uninstall/README.md) and

@@ -20,16 +20,6 @@
       - k8s_uninstall_command_timeout | int > 0
   tags: [always]
 
-- name: Inspect node and validate storage before changing anything
-  alancaldelas.kubernetes_baremetal.k8s_uninstall_node:
-    config_files: "{{ k8s_uninstall_config_files + k8s_uninstall_kubeconfig_paths }}"
-    phase: preflight
-    confirmation: "{{ k8s_uninstall_confirmation }}"
-    extra_data_paths: "{{ k8s_uninstall_extra_data_paths }}"
-    command_timeout: "{{ k8s_uninstall_command_timeout }}"
-  register: _uninstall_preflight
-  tags: [always]
-
 - name: Discover installed services
   ansible.builtin.service_facts:
   tags: [always]
@@ -55,12 +45,33 @@
     _uninstall_services: "{{ (k8s_uninstall_services + k8s_uninstall_extra_services) | unique | select('in', (ansible_facts.services | dict2items | rejectattr('value.status', 'equalto', 'not-found') | map(attribute='key') | list) + (_uninstall_unit_files.stdout_lines | map('regex_replace', '\\s.*$', '') | list)) | list }}"
   tags: [always]
 
+# Preflight also decides which listed packages can go: dnf5 refuses to cascade
+# onto unlisted dependents (skopeo needing containers-common), so those are kept
+# and reported instead of failing the run after workloads were destroyed.
+- name: Inspect node and validate storage before changing anything
+  alancaldelas.kubernetes_baremetal.k8s_uninstall_node:
+    config_files: "{{ k8s_uninstall_config_files + k8s_uninstall_kubeconfig_paths }}"
+    phase: preflight
+    confirmation: "{{ k8s_uninstall_confirmation }}"
+    extra_data_paths: "{{ k8s_uninstall_extra_data_paths }}"
+    command_timeout: "{{ k8s_uninstall_command_timeout }}"
+    packages: "{{ _uninstall_packages }}"
+  register: _uninstall_preflight
+  tags: [always]
+
+- name: Keep listed packages that other installed software still requires
+  ansible.builtin.set_fact:
+    _uninstall_packages: "{{ _uninstall_preflight.removable_packages }}"
+    _uninstall_retained_packages: "{{ _uninstall_preflight.retained_packages }}"
+  tags: [always]
+
 - name: Show exact uninstall scope
   ansible.builtin.debug:
     msg:
       node: "{{ inventory_hostname }}"
       data_directories: "{{ _uninstall_preflight.existing_data_paths }}"
       packages: "{{ _uninstall_packages }}"
+      packages_kept_for_other_software: "{{ _uninstall_retained_packages }}"
       services: "{{ _uninstall_services }}"
       kubeconfigs: "{{ k8s_uninstall_kubeconfig_paths }}"
       reboot: "{{ k8s_uninstall_reboot }}"

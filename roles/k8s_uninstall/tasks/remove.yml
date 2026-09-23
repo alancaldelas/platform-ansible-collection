@@ -129,10 +129,13 @@
   ansible.builtin.package_facts:
     manager: auto
 
-- name: Assert no targeted packages remain
+- name: Assert no removable packages remain
   ansible.builtin.assert:
     that:
-      - k8s_uninstall_packages | intersect(ansible_facts.packages.keys() | list) | length == 0
+      - _uninstall_packages | intersect(ansible_facts.packages.keys() | list) | length == 0
+    fail_msg: >-
+      Packages remain after removal:
+      {{ _uninstall_packages | intersect(ansible_facts.packages.keys() | list) }}
 
 - name: Verify no containers, engines or local data remain
   alancaldelas.kubernetes_baremetal.k8s_uninstall_node:

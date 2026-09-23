@@ -236,6 +236,29 @@ def cleanup_storage(paths, mountinfo_reader, unmount):
     return changed
 
 
+def removable_packages(candidates, dependents_of):
+    """Split candidates into (removable, retained) by installed reverse dependencies.
+
+    dnf5 through Ansible refuses to cascade a removal onto packages outside the
+    request, so a listed package that another installed package still needs
+    (skopeo needing containers-common, for example) is kept rather than
+    failing the run. Iterates to a fixed point because retaining one package
+    can in turn protect the packages it depends on.
+    """
+    removable = list(candidates)
+    retained = {}
+    changed = True
+    while changed:
+        changed = False
+        for package in list(removable):
+            blockers = sorted(dep for dep in dependents_of(package) if dep not in removable)
+            if blockers:
+                removable.remove(package)
+                retained[package] = blockers
+                changed = True
+    return removable, retained
+
+
 def identifiers(output):
     values = output.split()
     if any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]*', value) for value in values):

@@ -317,6 +317,26 @@ class UninstallTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'containers remain'):
             self.helper.stop_oci(run, 'crun', '/run/crun')
 
+    def test_packages_needed_by_unlisted_software_are_retained(self):
+        graph = {
+            'containers-common': ['containers-common-extra', 'skopeo'],
+            'containers-common-extra': ['buildah', 'podman'],
+            'netavark': ['containers-common-extra'],
+            'crun': ['containers-common-extra'],
+            'conmon': ['podman'],
+        }
+        candidates = ['podman', 'buildah', 'containers-common', 'containers-common-extra', 'crun', 'netavark', 'conmon', 'kubelet']
+        removable, retained = self.helper.removable_packages(candidates, lambda name: graph.get(name, []))
+        self.assertEqual(retained, {'containers-common': ['skopeo']})
+        self.assertEqual(removable, [p for p in candidates if p != 'containers-common'])
+
+    def test_retention_propagates_to_dependencies_of_kept_packages(self):
+        # keeping B (needed by unlisted X) must also keep A, which B needs.
+        graph = {'A': ['B'], 'B': ['X']}
+        removable, retained = self.helper.removable_packages(['A', 'B', 'C'], lambda name: graph.get(name, []))
+        self.assertEqual(removable, ['C'])
+        self.assertEqual(retained, {'A': ['B'], 'B': ['X']})
+
     def test_cyclic_config_imports_terminate(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

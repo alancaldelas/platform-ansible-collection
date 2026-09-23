@@ -289,6 +289,48 @@
     - cilium
   when: k8s_node_role == 'master'
 
+# Cilium reads cni-exclusive at agent startup and, when true, renames every
+# other CNI config to *.cilium_bak. An existing Cilium must be upgraded with
+# exclusivity off before Multus can take its place in the chain.
+- name: Check whether Cilium claims exclusive ownership of the CNI config directory
+  command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+    get configmap cilium-config -o jsonpath={.data.cni-exclusive}
+  changed_when: false
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+    - k8s_multus_enabled | bool
+    - cni_check.stdout != ""
+  register: cilium_cni_exclusive_check
+
+- name: Let Multus coexist with existing Cilium installation
+  command: >-
+    /usr/local/bin/cilium upgrade --version {{ cilium_version }}
+    {{ cilium_base_flags }}
+    {{ cilium_gateway_api_flags if cilium_gateway_api_enabled else '' }}
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when:
+    - k8s_node_role == 'master'
+    - k8s_cni_plugin == 'cilium'
+    - k8s_multus_enabled | bool
+    - cni_check.stdout != ""
+    - cilium_cni_exclusive_check.stdout != "false"
+  register: cilium_multus_upgrade
+
+- name: Restart Cilium agents so the CNI config directory is no longer exclusive
+  command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+    rollout restart daemonset/cilium
+  when: cilium_multus_upgrade.changed | default(false)
+
+- name: Wait for Cilium to be ready after allowing Multus
+  command: /usr/local/bin/cilium status --wait
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: cilium_multus_upgrade.changed | default(false)
+
 - name: Check if Multus CNI is already installed
   command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get daemonset -n kube-system kube-multus-ds -o name
   register: multus_check
@@ -323,6 +365,28 @@
     - k8s_multus_enabled | bool
     - multus_install.changed | default(false)
   failed_when: false
+
+# The thick daemon regenerates 00-multus.conf at startup; restart it when a
+# previously exclusive Cilium had renamed the config away.
+- name: Restart Multus so it rewrites its CNI configuration
+  command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+    rollout restart daemonset/kube-multus-ds
+  when:
+    - k8s_node_role == 'master'
+    - k8s_multus_enabled | bool
+    - cilium_multus_upgrade.changed | default(false)
+    - not (multus_install.changed | default(false))
+
+- name: Wait for Multus configuration to be active
+  command: >-
+    kubectl --kubeconfig=/etc/kubernetes/admin.conf -n kube-system
+    rollout status daemonset/kube-multus-ds --timeout=300s
+  when:
+    - k8s_node_role == 'master'
+    - k8s_multus_enabled | bool
+    - (cilium_multus_upgrade.changed | default(false)) or (multus_install.changed | default(false))
+  changed_when: false
 
 - name: Clean up Multus manifest
   file:

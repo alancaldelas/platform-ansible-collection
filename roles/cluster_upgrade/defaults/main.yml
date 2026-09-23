@@ -10,7 +10,11 @@ cilium_gateway_api_enabled: false
 # Keep in step with roles/k8s/defaults: every cilium upgrade must carry the
 # IPAM setting or a values reset would fall back to cluster-pool 10.0.0.0/8.
 cilium_ipam_mode: kubernetes
-cilium_base_flags: "--set ipam.mode={{ cilium_ipam_mode }}"
+# cni.exclusive=false keeps Cilium from renaming other CNI configs such as
+# Multus's 00-multus.conf out of /etc/cni/net.d.
+cilium_base_flags: >-
+  --set ipam.mode={{ cilium_ipam_mode }}
+  {{ '--set cni.exclusive=false' if k8s_multus_enabled | default(true) | bool else '' }}
 
 # K8s Upgrade
 k8s_upgrade_from: ""

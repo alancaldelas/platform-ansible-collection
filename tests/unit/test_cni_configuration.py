@@ -25,6 +25,19 @@ class CiliumConfigurationTests(unittest.TestCase):
             if isinstance(command, str) and '/usr/local/bin/cilium' in command and (
                     ' install ' in command or ' upgrade ' in command):
                 commands.append((task['name'], command))
-        self.assertEqual(len(commands), 3, [name for name, _ in commands])
+        self.assertEqual(len(commands), 4, [name for name, _ in commands])
         for name, command in commands:
             self.assertIn('{{ cilium_base_flags }}', command, name)
+
+    def test_multus_is_installed_by_default(self):
+        defaults = load('roles/k8s/defaults/main.yml')
+        self.assertIs(defaults['k8s_multus_enabled'], True)
+        tasks = load('roles/k8s/tasks/cni_install.yml')
+        install = next(task for task in tasks if task['name'] == 'Install Multus CNI')
+        self.assertIn('k8s_multus_enabled | bool', install['when'])
+
+    def test_cilium_leaves_cni_directory_shared_when_multus_is_enabled(self):
+        for role in ('k8s', 'cluster_upgrade'):
+            flags = load('roles/%s/defaults/main.yml' % role)['cilium_base_flags']
+            self.assertIn('cni.exclusive=false', flags, role)
+            self.assertIn('k8s_multus_enabled', flags, role)
