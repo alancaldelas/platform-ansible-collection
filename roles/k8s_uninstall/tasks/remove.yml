@@ -1,0 +1,159 @@
+---
+- name: Stop kubelet so it cannot recreate containers
+  ansible.builtin.systemd_service:
+    name: kubelet.service
+    state: stopped
+    enabled: false
+  when: "'kubelet.service' in _uninstall_services"
+
+- name: Kill and remove all containers using available runtime APIs
+  alancaldelas.kubernetes_baremetal.k8s_uninstall_node:
+    phase: workloads
+    confirmation: "{{ k8s_uninstall_confirmation }}"
+    extra_data_paths: "{{ k8s_uninstall_extra_data_paths }}"
+    command_timeout: "{{ k8s_uninstall_command_timeout }}"
+
+  register: _uninstall_workloads
+
+- name: Stop socket activation and runtime services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ _uninstall_services }}"
+
+- name: Kill residual processes, remove owned networking, unmount and erase local state
+  alancaldelas.kubernetes_baremetal.k8s_uninstall_node:
+    phase: cleanup
+    tracked_processes: "{{ _uninstall_workloads.tracked_processes }}"
+    confirmation: "{{ k8s_uninstall_confirmation }}"
+    extra_data_paths: "{{ k8s_uninstall_extra_data_paths }}"
+    command_timeout: "{{ k8s_uninstall_command_timeout }}"
+
+- name: Release holds on installed Kubernetes and runtime packages
+  ansible.builtin.command:
+    argv: "{{ ['apt-mark', 'unhold'] + _uninstall_packages }}"
+  when:
+    - ansible_facts['os_family'] == 'Debian'
+    - _uninstall_packages | length > 0
+  changed_when: true
+
+- name: Purge installed Kubernetes and runtime packages on Debian family
+  ansible.builtin.apt:
+    name: "{{ _uninstall_packages }}"
+    state: absent
+    purge: true
+    autoremove: false
+  when:
+    - ansible_facts['os_family'] == 'Debian'
+    - _uninstall_packages | length > 0
+
+- name: Remove installed Kubernetes and runtime packages on RedHat family
+  ansible.builtin.package:
+    name: "{{ _uninstall_packages }}"
+    state: absent
+  when:
+    - ansible_facts['os_family'] == 'RedHat'
+    - _uninstall_packages | length > 0
+
+- name: Remove source or binary-installed executables
+  ansible.builtin.file:
+    path: "{{ item.0 }}/{{ item.1 }}"
+    state: absent
+  loop: "{{ ['/usr/local/bin', '/usr/local/sbin', '/opt/bin'] | product(k8s_uninstall_local_binaries) | list }}"
+  loop_control:
+    label: "{{ item.0 }}/{{ item.1 }}"
+
+- name: Remove local service units and drop-ins
+  ansible.builtin.file:
+    path: "{{ item.0 }}/{{ item.1 }}"
+    state: absent
+  loop: >-
+    {{ ['/etc/systemd/system', '/usr/local/lib/systemd/system'] |
+       product(k8s_uninstall_services + (k8s_uninstall_services | map('regex_replace', '$', '.d') | list)) | list }}
+  loop_control:
+    label: "{{ item.0 }}/{{ item.1 }}"
+
+- name: Remove collection configuration and selected kubeconfigs
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ k8s_uninstall_config_files + k8s_uninstall_kubeconfig_paths }}"
+
+- name: Find collection-generated CRI-O RPM repository files
+  ansible.builtin.find:
+    paths: /etc/yum.repos.d
+    patterns: ['devel_kubic_libcontainers_stable.repo', 'devel_kubic_libcontainers_stable_cri-o_*.repo']
+    file_type: file
+  register: _uninstall_crio_repos
+  when: ansible_facts['os_family'] == 'RedHat'
+
+- name: Remove collection-generated CRI-O RPM repositories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ _uninstall_crio_repos.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Find Debian source list files including generated filenames
+  ansible.builtin.find:
+    paths: /etc/apt/sources.list.d
+    patterns: '*.list'
+    file_type: file
+  register: _uninstall_apt_sources
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Remove installed stack repository lines while preserving other sources
+  ansible.builtin.lineinfile:
+    path: "{{ item.path }}"
+    regexp: '^deb(-src)?\s+.*https?://(download\.docker\.com/linux/|download\.opensuse\.org/repositories/devel:/kubic:/libcontainers:|pkgs\.k8s\.io/|apt\.kubernetes\.io/|packages\.cloud\.google\.com/apt/?\s+kubernetes-[^\s]+\s)'
+    state: absent
+  loop: "{{ _uninstall_apt_sources.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Reload systemd after unit removal
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Remove state recreated by package removal scripts
+  alancaldelas.kubernetes_baremetal.k8s_uninstall_node:
+    phase: cleanup
+    confirmation: "{{ k8s_uninstall_confirmation }}"
+    extra_data_paths: "{{ k8s_uninstall_extra_data_paths }}"
+    tracked_processes: "{{ _uninstall_workloads.tracked_processes }}"
+    command_timeout: "{{ k8s_uninstall_command_timeout }}"
+
+- name: Verify packages were removed
+  ansible.builtin.package_facts:
+    manager: auto
+
+- name: Assert no targeted packages remain
+  ansible.builtin.assert:
+    that:
+      - k8s_uninstall_packages | intersect(ansible_facts.packages.keys() | list) | length == 0
+
+- name: Verify no containers, engines or local data remain
+  alancaldelas.kubernetes_baremetal.k8s_uninstall_node:
+    phase: verify
+    verify_binaries: "{{ k8s_uninstall_local_binaries }}"
+    tracked_processes: "{{ _uninstall_workloads.tracked_processes }}"
+    confirmation: "{{ k8s_uninstall_confirmation }}"
+    extra_data_paths: "{{ k8s_uninstall_extra_data_paths }}"
+    command_timeout: "{{ k8s_uninstall_command_timeout }}"
+
+- name: Reboot to clear residual kernel networking state when requested
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ k8s_uninstall_reboot_timeout }}"
+  when: k8s_uninstall_reboot | bool
+
+- name: Report uninstall result
+  ansible.builtin.debug:
+    msg: >-
+      Kubernetes, rootful containers, local runtime data, installed runtimes and
+      runc/crun have been removed from {{ inventory_hostname }}.
+      {{ 'Node rebooted.' if k8s_uninstall_reboot else
+         'Reboot before reinstalling to clear residual eBPF/IPVS/kernel network state.' }}
+      Remote volumes and hostPath source directories outside the listed data
+      roots were not erased.

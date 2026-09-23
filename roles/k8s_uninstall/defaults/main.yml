@@ -1,0 +1,120 @@
+---
+# Full node teardown: all rootful containers and local runtime volumes are lost.
+k8s_uninstall_confirmation: ""
+k8s_uninstall_extra_data_paths: []
+k8s_uninstall_extra_services: []
+k8s_uninstall_command_timeout: 120
+k8s_uninstall_reboot: false
+k8s_uninstall_reboot_timeout: 600
+
+# Only explicit kubeconfig files are removed; a user's whole ~/.kube is not purged.
+k8s_uninstall_kubeconfig_paths:
+  - /root/.kube/config
+
+k8s_uninstall_services:
+  - kubelet.service
+  - kube-proxy.service
+  - cri-docker.socket
+  - cri-docker.service
+  - docker.socket
+  - docker.service
+  - podman.socket
+  - podman.service
+  - crio.service
+  - containerd.service
+  - etcd.service
+
+k8s_uninstall_packages:
+  - etcd
+  - etcd-server
+  - etcd-client
+  - kubeadm
+  - kubelet
+  - kubectl
+  - kubernetes-cni
+  - cri-tools
+  - kubernetes-client
+  - kubernetes-node
+  - kubernetes-master
+  - containerd
+  - containerd.io
+  - cri-o
+  - cri-o-runc
+  - cri-o-conmon
+  - cri-dockerd
+  - docker
+  - docker.io
+  - docker-engine
+  - docker-ce
+  - docker-ce-cli
+  - docker-ce-rootless-extras
+  - docker-buildx-plugin
+  - docker-compose-plugin
+  - podman
+  - podman-docker
+  - containers-common
+  - containers-common-extra
+  - buildah
+  - conmon
+  - runc
+  - crun
+  - containernetworking-plugins
+  - netavark
+  - aardvark-dns
+
+k8s_uninstall_local_binaries:
+  - kubeadm
+  - kubelet
+  - kubectl
+  - kube-apiserver
+  - kube-controller-manager
+  - kube-scheduler
+  - kube-proxy
+  - containerd
+  - containerd-shim
+  - containerd-shim-runc-v1
+  - containerd-shim-runc-v2
+  - containerd-stress
+  - ctr
+  - crio
+  - crio-status
+  - crictl
+  - critest
+  - cri-dockerd
+  - dockerd
+  - docker
+  - docker-proxy
+  - docker-init
+  - podman
+  - conmon
+  - runc
+  - crun
+  - cilium
+  - cilium-dbg
+  - calicoctl
+  - weave
+  - multus
+  - etcd
+  - etcdctl
+  - etcdutl
+
+k8s_uninstall_config_files:
+  - /run/docker.sock
+  - /run/docker.pid
+  - /run/cri-dockerd.sock
+  - /etc/crictl.yaml
+  - /etc/default/kubelet
+  - /etc/sysconfig/kubelet
+  - /etc/sysconfig/crio
+  - /etc/profile.d/k8s.sh
+  - /etc/profile.d/k8s_ubuntu.sh
+  - /etc/profile.d/optional/static.sh
+  - /etc/apt/sources.list.d/kubernetes.list
+  - /etc/apt/sources.list.d/docker.list
+  - /etc/apt/sources.list.d/cri-o.list
+  - /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+  - /etc/apt/keyrings/cri-o-apt-keyring.gpg
+  - /etc/yum.repos.d/kubernetes.repo
+  - /etc/yum.repos.d/docker-ce-stable.repo
+  - /etc/yum.repos.d/cri-o.repo
+  - /root/kubeadm-config.yaml

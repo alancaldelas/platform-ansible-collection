@@ -28,6 +28,13 @@ Deploys Kubernetes clusters using kubeadm with:
 - Binary or source installation
 - CNI plugin deployment (Calico, Flannel, Weave, Cilium)
 
+### k8s_uninstall
+Fully removes Kubernetes, all rootful containers, local runtime data, installed
+container engines, and runc/crun from explicitly selected nodes. Provides a
+check-mode preview and requires a destructive confirmation for execution.
+
+[Documentation and commands](roles/k8s_uninstall/README.md)
+
 ### k8s_upgrade
 Performs safe, gated in-place minor version upgrades of single-node kubeadm clusters with:
 - Pre-flight checks (version enforcement, cluster health, deprecated API detection, flag audit)

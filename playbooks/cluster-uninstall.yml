@@ -1,0 +1,12 @@
+---
+# Preview: ansible-playbook -i inventory.ini playbooks/cluster-uninstall.yml
+#          -e k8s_uninstall_hosts=k8s_cluster --check
+# Execute only with the explicit confirmation documented in roles/k8s_uninstall.
+- name: Completely remove Kubernetes and all rootful container runtimes
+  hosts: "{{ k8s_uninstall_hosts | mandatory }}"
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  roles:
+    - alancaldelas.kubernetes_baremetal.k8s_uninstall

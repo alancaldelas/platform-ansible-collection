@@ -7,6 +7,10 @@ k8s_upgrade_node_role: "{{ k8s_node_role | default('master') }}"
 k8s_cni_plugin: "{{ k8s_cni_plugin | default('cilium') }}"
 cilium_version: "{{ cilium_version | default('1.19.6') }}"
 cilium_gateway_api_enabled: false
+# Keep in step with roles/k8s/defaults: every cilium upgrade must carry the
+# IPAM setting or a values reset would fall back to cluster-pool 10.0.0.0/8.
+cilium_ipam_mode: kubernetes
+cilium_base_flags: "--set ipam.mode={{ cilium_ipam_mode }}"
 
 # K8s Upgrade
 k8s_upgrade_from: ""

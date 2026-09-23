@@ -478,8 +478,7 @@ k8s/
 │   ├── kubernetes_install.yml    # Install from packages
 │   └── kubernetes_install_source.yml  # Build from source
 ├── templates/
-│   ├── kubeadm-config.yaml.j2    # kubeadm cluster configuration
-│   └── uninstall.sh.j2           # Uninstall script
+│   └── kubeadm-config.yaml.j2    # kubeadm cluster configuration
 └── vars/main.yml                 # Internal variables
 ```
 
@@ -586,16 +585,18 @@ journalctl -u containerd -f
 
 ## Uninstallation
 
-An uninstall script is generated at `/root/uninstall.sh` on the target node:
+Use the dedicated [full uninstall role](../k8s_uninstall/README.md) and
+[cluster-uninstall playbook](../../playbooks/cluster-uninstall.yml). No
+`/root/uninstall.sh` is generated.
 
 ```bash
-sudo /root/uninstall.sh
+ansible-playbook -i inventory.ini playbooks/cluster-uninstall.yml \
+  -e k8s_uninstall_hosts=k8s_cluster --check
 ```
 
-This will:
-- Reset kubeadm configuration
-- Remove Kubernetes packages
-- Clean up configuration files
+Execution requires `k8s_uninstall_confirmation=REMOVE-ALL-CONTAINERS` and
+removes **all rootful containers**, local runtime volumes, Kubernetes,
+installed container engines and runc/crun on the selected nodes.
 
 ## License
 

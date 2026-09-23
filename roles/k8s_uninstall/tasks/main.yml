@@ -1,0 +1,75 @@
+---
+# Always-tagged gate also protects callers selecting a later phase by tag.
+- name: Require explicit full-removal confirmation
+  ansible.builtin.assert:
+    that:
+      - ansible_check_mode or k8s_uninstall_confirmation == 'REMOVE-ALL-CONTAINERS'
+    fail_msg: >-
+      This destroys Kubernetes, ALL rootful containers (including non-Kubernetes
+      containers), images and local runtime volumes, and uninstalls the runtimes
+      and runc/crun. Preview with --check. To execute, explicitly set
+      k8s_uninstall_confirmation=REMOVE-ALL-CONTAINERS.
+  tags: [always]
+
+- name: Require a supported node OS
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['system'] == 'Linux'
+      - ansible_facts['os_family'] in ['Debian', 'RedHat']
+      - ansible_facts['service_mgr'] == 'systemd'
+      - k8s_uninstall_command_timeout | int > 0
+  tags: [always]
+
+- name: Inspect node and validate storage before changing anything
+  alancaldelas.kubernetes_baremetal.k8s_uninstall_node:
+    config_files: "{{ k8s_uninstall_config_files + k8s_uninstall_kubeconfig_paths }}"
+    phase: preflight
+    confirmation: "{{ k8s_uninstall_confirmation }}"
+    extra_data_paths: "{{ k8s_uninstall_extra_data_paths }}"
+    command_timeout: "{{ k8s_uninstall_command_timeout }}"
+  register: _uninstall_preflight
+  tags: [always]
+
+- name: Discover installed services
+  ansible.builtin.service_facts:
+  tags: [always]
+
+- name: Discover socket units as well as service unit files
+  ansible.builtin.command:
+    argv: [systemctl, list-unit-files, '--type=service,socket', --no-legend, --no-pager]
+  register: _uninstall_unit_files
+  changed_when: false
+  check_mode: false
+  tags: [always]
+
+- name: Discover installed packages
+  ansible.builtin.package_facts:
+    manager: auto
+  tags: [always]
+
+# service_facts lists 'not-found' placeholder units referenced by other units;
+# stopping one of those fails, so only real unit files and loaded services count.
+- name: Resolve installed packages and services for removal
+  ansible.builtin.set_fact:
+    _uninstall_packages: "{{ k8s_uninstall_packages | intersect(ansible_facts.packages.keys() | list) }}"
+    _uninstall_services: "{{ (k8s_uninstall_services + k8s_uninstall_extra_services) | unique | select('in', (ansible_facts.services | dict2items | rejectattr('value.status', 'equalto', 'not-found') | map(attribute='key') | list) + (_uninstall_unit_files.stdout_lines | map('regex_replace', '\\s.*$', '') | list)) | list }}"
+  tags: [always]
+
+- name: Show exact uninstall scope
+  ansible.builtin.debug:
+    msg:
+      node: "{{ inventory_hostname }}"
+      data_directories: "{{ _uninstall_preflight.existing_data_paths }}"
+      packages: "{{ _uninstall_packages }}"
+      services: "{{ _uninstall_services }}"
+      kubeconfigs: "{{ k8s_uninstall_kubeconfig_paths }}"
+      reboot: "{{ k8s_uninstall_reboot }}"
+      rootful_containers: ALL, including containers outside Kubernetes
+  tags: [always]
+
+# A check-mode run deliberately stops at inspection; even runtime info commands
+# in later phases must never be accidentally forced through check_mode: false.
+- name: Execute complete teardown in order
+  ansible.builtin.include_tasks: remove.yml
+  when: not ansible_check_mode
+  tags: [always]

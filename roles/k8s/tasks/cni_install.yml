@@ -167,6 +167,7 @@
 - name: Install Cilium CNI using CLI
   command: >-
     /usr/local/bin/cilium install --version {{ cilium_version }}
+    {{ cilium_base_flags }}
     {{ cilium_gateway_api_flags if cilium_gateway_api_enabled else '' }}
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf
@@ -204,6 +205,7 @@
 - name: Enable Gateway API on existing Cilium installation
   command: >-
     /usr/local/bin/cilium upgrade --version {{ cilium_version }}
+    {{ cilium_base_flags }}
     {{ cilium_gateway_api_flags }}
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf

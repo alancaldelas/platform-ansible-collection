@@ -181,6 +181,13 @@ calico_version: "3.25.0"
 flannel_version: "latest"
 weave_version: "2.8.1"
 
+# Cilium IPAM. 'kubernetes' honours the pod CIDR kubeadm assigns to each node;
+# Cilium's own cluster-pool default (10.0.0.0/8) can overlap the node LAN.
+# cilium_base_flags is passed to every cilium install and upgrade command so
+# an upgrade cannot silently reset it.
+cilium_ipam_mode: kubernetes
+cilium_base_flags: "--set ipam.mode={{ cilium_ipam_mode }}"
+
 # Cilium Gateway API support (cilium only). Installs the Gateway API CRDs
 # and enables Cilium's Gateway API implementation. Requires kube-proxy
 # replacement, which these flags also enable.

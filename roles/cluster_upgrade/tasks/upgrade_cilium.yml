@@ -23,6 +23,7 @@
 - name: "Cilium Upgrade | Run upgrade"
   command: >-
     /usr/local/bin/cilium upgrade --version {{ cilium_version }}
+    {{ cilium_base_flags }}
     {{ cilium_gateway_api_flags | default('') if cilium_gateway_api_enabled | default(false) else '' }}
   environment:
     KUBECONFIG: /etc/kubernetes/admin.conf

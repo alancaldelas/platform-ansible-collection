@@ -8,6 +8,7 @@ This directory contains comprehensive sample playbooks demonstrating all install
 - [Kubernetes Deployment Playbooks](#kubernetes-deployment-playbooks)
 - [CNI Plugin Specific Playbooks](#cni-plugin-specific-playbooks)
 - [Advanced Deployment Scenarios](#advanced-deployment-scenarios)
+- [Full Cluster Removal](#full-cluster-removal)
 - [Quick Start Guide](#quick-start-guide)
 
 ## Container Runtime Playbooks
@@ -767,3 +768,23 @@ MIT-0 / GPL-2.0-or-later
 For issues, questions, or contributions, please refer to the main collection repository.
 
 Created by Alan Caldelas (ajcaldelas@gmail.com)
+
+## Full Cluster Removal
+
+[`cluster-uninstall.yml`](cluster-uninstall.yml) removes Kubernetes, every
+installed supported rootful engine, all its containers/images/local volumes,
+and runc/crun from explicitly selected nodes.
+
+```bash
+# Preview only
+ansible-playbook -i inventory.ini playbooks/cluster-uninstall.yml \
+  -e k8s_uninstall_hosts=k8s_cluster --check
+
+# Destroy the selected nodes' cluster and runtime installations
+ansible-playbook -i inventory.ini playbooks/cluster-uninstall.yml \
+  -e k8s_uninstall_hosts=k8s_cluster \
+  -e k8s_uninstall_confirmation=REMOVE-ALL-CONTAINERS
+```
+
+See the [uninstall role documentation](../roles/k8s_uninstall/README.md) for
+custom storage, reboot, rootless limitations, failure behavior and validation.
